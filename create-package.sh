@@ -1,6 +1,5 @@
 #!/bin/bash
 # Author: LeonMaxx
-# This script downloads the specified version of kernel, and creates a package with rpmbuild.
 
 spec_file="wine-proton.spec"
 work_dir="$PWD/work"
@@ -22,5 +21,7 @@ cp *.systemd $work_dir/SOURCES/
 cp wine-README* $work_dir/SOURCES/
 
 rpmbuild -bb "$spec_file" --define "_topdir $work_dir" --define "_rpmdir $rpm_dir" --define "_release $release"
+
+# To cross-build 32-bit packages uncomment following lines:
 #export PKG_CONFIG_PATH=/usr/lib/pkgconfig
 #rpmbuild -bb "$spec_file" --target i686 --define "_topdir $work_dir" --define "_rpmdir $rpm_dir" --define "_release $release"
