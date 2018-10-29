@@ -10,4 +10,4 @@ $ sudo yum-builddep wine-proton.spec
 $ ./create-package.sh
 ```
   
-To build 32-bit packages for RHEL/CentOS 7 you need to use [CentOs 7 Altarch i386](http://mirror.centos.org/altarch/7/isos/i386/) installation and build yourself `openal` and `SDL` packages.
+To build 32-bit packages for RHEL/CentOS 7 you need to use [CentOS 7 Altarch i386](http://mirror.centos.org/altarch/7/isos/i386/) installation and build yourself `openal` and `SDL` packages.
