@@ -19,7 +19,7 @@
 
 Name:           wine-proton
 Version:        3.16
-Release:        3.el7
+Release:        3%{?dist}
 Summary:        A compatibility layer for windows applications
 
 Group:          Applications/Emulators
@@ -146,6 +146,7 @@ BuildRequires:  mpg123-devel
 %endif
 BuildRequires:  SDL2-devel
 BuildRequires:  vulkan-devel
+BuildRequires:  mesa-libd3d-devel
 
 # Silverlight DRM-stuff needs XATTR enabled.
 BuildRequires:  gtk3-devel
