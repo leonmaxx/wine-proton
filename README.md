@@ -11,3 +11,6 @@ $ ./create-package.sh
 ```
   
 To build 32-bit packages for RHEL/CentOS 7 you need to use [CentOS 7 Altarch i386](http://mirror.centos.org/altarch/7/isos/i386/) installation and build yourself `openal` and `SDL` packages.
+
+## Packages
+Repository with built packages available at [Fedora COPR](https://copr.fedorainfracloud.org/coprs/leonmaxx/wine-proton/).
