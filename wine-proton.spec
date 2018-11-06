@@ -178,8 +178,8 @@ Requires:       wine-proton-openal(x86-32) = %{version}-%{release}
 Requires:       wine-proton-opencl(x86-32) = %{version}-%{release}
 %endif
 %if 0%{?fedora} >= 17
-Requires:       mingw32-wine-gecko = %winegecko
-Requires:       wine-proton-mono = %winemono
+Requires:       mingw32-wine-gecko >= %winegecko
+Requires:       wine-mono >= %winemono
 %endif
 #  wait for rhbz#968860 to require arch-specific samba-winbind-clients
 Requires:       /usr/bin/ntlm_auth
@@ -202,8 +202,8 @@ Requires:       wine-proton-openal(x86-64) = %{version}-%{release}
 Requires:       wine-proton-opencl(x86-64) = %{version}-%{release}
 %endif
 %if 0%{?fedora} >= 17
-Requires:       mingw64-wine-gecko = %winegecko
-Requires:       wine-proton-mono = %winemono
+Requires:       mingw64-wine-gecko >= %winegecko
+Requires:       wine-mono >= %winemono
 %endif
 Requires:       mesa-dri-drivers(x86-64)
 %endif
@@ -234,7 +234,7 @@ Requires:       wine-proton-twain(aarch-64) = %{version}-%{release}
 Requires:       wine-proton-pulseaudio(aarch-64) = %{version}-%{release}
 Requires:       wine-proton-openal(aarch-64) = %{version}-%{release}
 Requires:       wine-proton-opencl(aarch-64) = %{version}-%{release}
-Requires:       mingw64-wine-gecko = %winegecko
+Requires:       mingw64-wine-gecko >= %winegecko
 Requires:       mesa-dri-drivers(aarch-64)
 %endif
 
@@ -359,6 +359,7 @@ Register the wine binary handler for windows executables via SysV init files.
 %package filesystem
 Summary:        Filesystem directories for wine
 Group:          Applications/Emulators
+Provides:       wine-filesystem
 BuildArch:      noarch
 
 %description filesystem
