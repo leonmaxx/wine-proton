@@ -327,6 +327,7 @@ Requires:       libva
 # removed as of 1.7.35
 Obsoletes:      wine-wow < 1.7.35
 Provides:       wine-wow = %{version}-%{release}
+Provides:       wine-core
 
 %description core
 Wine core package includes the basic wine stuff needed by all other packages.
@@ -369,6 +370,7 @@ Filesystem directories and basic configuration for wine.
 Summary:        Common files
 Group:          Applications/Emulators
 Requires:       wine-proton-core = %{version}-%{release}
+Provides:       wine-common
 BuildArch:      noarch
 
 %description common
