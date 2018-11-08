@@ -1,6 +1,6 @@
 #!/bin/sh
 
-wine_zip=`ls wine-*.zip`
+wine_zip=`find -type f -name 'wine-*.zip'`
 
 if [ -z $wine_zip ]; then
 	echo WINE zip archive not found!
@@ -15,7 +15,7 @@ unzip -qq $wine_zip -d winetmp
 
 pushd winetmp
 
-wine_dir=`ls`
+wine_dir=`find -type d ! -path .`
 
 mv $wine_dir wine-proton
 tar czf ../wine-proton.tar.gz wine-proton
