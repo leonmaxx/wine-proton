@@ -15,7 +15,7 @@ unzip -qq $wine_zip -d winetmp
 
 pushd winetmp
 
-wine_dir=`find -type d ! -path .`
+wine_dir=`find . -mindepth 1 -type d | head -1`
 
 mv $wine_dir wine-proton
 tar czf ../wine-proton.tar.gz wine-proton
@@ -23,4 +23,5 @@ rm -rf wine-proton
 
 popd
 
+rm $wine_zip
 rmdir winetmp

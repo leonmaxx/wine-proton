@@ -2,7 +2,7 @@ Index: wine-1.7.22/loader/wine.inf.in
 ===================================================================
 --- wine-1.7.22.orig/loader/wine.inf.in
 +++ wine-1.7.22/loader/wine.inf.in
-@@ -568,6 +568,17 @@ HKLM,%FontSubStr%,"Times New Roman CE,23
+@@ -568,6 +568,16 @@ HKLM,%FontSubStr%,"Times New Roman CE,23
  HKLM,%FontSubStr%,"Times New Roman CYR,204",,"Times New Roman,204"
  HKLM,%FontSubStr%,"Times New Roman Greek,161",,"Times New Roman,161"
  HKLM,%FontSubStr%,"Times New Roman TUR,162",,"Times New Roman,162"
@@ -16,7 +16,6 @@ Index: wine-1.7.22/loader/wine.inf.in
 +HKCU,Software\Wine\Fonts\Replacements,"Batang",,"NanumMyeongjo"
 +HKCU,Software\Wine\Fonts\Replacements,"Dotum",,"NanumGothic"
 +HKCU,Software\Wine\Fonts\Replacements,"Gulim",,"NanumGothic"
-+HKCU,Software\Wine\Fonts\Replacements,"Arial Unicode MS",,"Droid Sans Fallback"
  HKLM,System\CurrentControlSet\Hardware Profiles\Current\Software\Fonts,"LogPixels",0x10003,0x00000060
- 
- [MCI]
+ HKLM,%FontsNT%,"Arial (TrueType)",,"arial.ttf"
+ HKLM,%FontsNT%,"Arial Bold (TrueType)",,"arialbd.ttf"

@@ -7,6 +7,15 @@
 
 %global staging   0
 
+# VkD3D for DX12 support
+%bcond_without vkd3d
+
+# FAudio free XAudio implementation
+%bcond_without faudio
+
+# FFMPEG
+%bcond_with ffmpeg
+
 #global _default_patch_fuzz 2
 
 # binfmt macros for RHEL
@@ -19,7 +28,7 @@
 
 Name:           wine-proton
 Version:        3.16
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        A compatibility layer for windows applications
 
 Group:          Applications/Emulators
@@ -73,7 +82,16 @@ Patch512:       wine-ntdll.patch
 Patch513:       wine-winepulse.patch
 Patch514:       wine-bcrypt.patch
 Patch515:       wine-kernel32.patch
+Patch516:		wine-proton-nocrash-to-revert.patch
+Patch517:		wine-native-xaudio2-to-revert.patch
 
+# dxvk dlls redirects
+Patch520:       wine-dxvk-helper.patch
+
+# faudio support
+Patch530:       wine-faudio.patch
+
+# additional fonts
 Source550:      wine-fonts.patch
 
 %if !%{?no64bit}
@@ -141,11 +159,12 @@ BuildRequires:  gettext-devel
 BuildRequires:  chrpath
 BuildRequires:  gstreamer1-devel
 BuildRequires:  gstreamer1-plugins-base-devel
-%if 0%{?fedora} > 24
+%if 0%{?fedora} > 24 || 0%{?rhel} >= 7
 BuildRequires:  mpg123-devel
 %endif
 BuildRequires:  SDL2-devel
 BuildRequires:  vulkan-devel
+BuildRequires:  openal-soft-devel
 BuildRequires:  mesa-libd3d-devel
 
 # Silverlight DRM-stuff needs XATTR enabled.
@@ -154,8 +173,23 @@ BuildRequires:  libattr-devel
 BuildRequires:  libva-devel
 
 %if 0%{?fedora} >= 10 || 0%{?rhel} >= 6
-BuildRequires:  openal-soft-devel
 BuildRequires:  icoutils
+%endif
+
+%if 0%{with ffmpeg}
+BuildRequires:  ffmpeg-devel
+Requires:       ffmpeg-libs
+%endif
+
+%if 0%{with vkd3d}
+BuildRequires:  libvkd3d-devel
+BuildRequires:  libvkd3d-utils-devel
+Requires:       libvkd3d
+%endif
+
+%if 0%{with faudio}
+BuildRequires:  libfaudio-devel
+Requires:       libfaudio
 %endif
 
 Requires:       wine-proton-common = %{version}-%{release}
@@ -327,7 +361,7 @@ Requires:       libva
 # removed as of 1.7.35
 Obsoletes:      wine-wow < 1.7.35
 Provides:       wine-wow = %{version}-%{release}
-Provides:       wine-core
+Provides:       wine-core = %{version}-%{release}
 
 %description core
 Wine core package includes the basic wine stuff needed by all other packages.
@@ -360,7 +394,7 @@ Register the wine binary handler for windows executables via SysV init files.
 %package filesystem
 Summary:        Filesystem directories for wine
 Group:          Applications/Emulators
-Provides:       wine-filesystem
+Provides:       wine-filesystem = %{version}-%{release}
 BuildArch:      noarch
 
 %description filesystem
@@ -370,7 +404,7 @@ Filesystem directories and basic configuration for wine.
 Summary:        Common files
 Group:          Applications/Emulators
 Requires:       wine-proton-core = %{version}-%{release}
-Provides:       wine-common
+Provides:       wine-common = %{version}-%{release}
 BuildArch:      noarch
 
 %description common
@@ -617,6 +651,7 @@ ISDN support for wine
 %package devel
 Summary: Wine development environment
 Group: System Environment/Libraries
+Provides: wine-devel
 Requires: wine-proton-core = %{version}-%{release}
 
 %description devel
@@ -664,10 +699,19 @@ This package adds the opencl driver for wine.
 %setup -q -n wine-proton
 %patch511 -p1 -b.cjk
 %patch512 -p1 -b.ntdll
+
+%if 0%{with faudio}
+%patch530 -p1 -b.faudio
+%else
 %patch513 -p1 -b.wpulse
+%patch517 -R -p1 -b.xaudio
+%endif
+
 %patch514 -p1 -b.bcrypt
 %patch515 -p1 -b.krnl
+%patch516 -R -p1 -b.nocrash
 
+# add fonts
 git apply -p2 %{SOURCE550}
 
 # apply wine d3d9 patches
@@ -676,6 +720,8 @@ patch -p1 <wine-d3d9-patches-wine-d3d9-%{version}/d3d9-helper.patch
 patch -p1 <wine-d3d9-patches-wine-d3d9-%{version}/wine-d3d9.patch
 
 rm -rf wine-d3d9-patches-wine-d3d9-%{version}
+
+%patch520 -p2 -b.dxvk
 
 autoreconf
 tools/make_requests
@@ -703,8 +749,14 @@ export CFLAGS="`echo $CFLAGS` -I/usr/include/ffmpeg"
  --without-hal --with-dbus \
  --with-x \
  --with-d3d9-nine \
+%if 0%{with vkd3d}
+ --with-vkd3d \
+%endif
 %ifarch %{arm}
  --with-float-abi=hard \
+%endif
+%if 0%{with faudio}
+ --with-faudio \
 %endif
 %ifarch x86_64 aarch64
  --enable-win64 \
@@ -1429,7 +1481,7 @@ fi
 %{_libdir}/wine/d3d10_1.dll.so
 %{_libdir}/wine/d3d10core.dll.so
 %{_libdir}/wine/d3d11.dll.so
-%if 0
+%if 0%{with vkd3d}
 %{_libdir}/wine/d3d12.dll.so
 %endif
 %{_libdir}/wine/d3dcompiler_*.dll.so
@@ -1892,6 +1944,16 @@ fi
 %{_libdir}/wine/x3daudio1_5.dll.so
 %{_libdir}/wine/x3daudio1_6.dll.so
 %{_libdir}/wine/x3daudio1_7.dll.so
+%if 0%{with faudio}
+%{_libdir}/wine/xactengine3_0.dll.so
+%{_libdir}/wine/xactengine3_1.dll.so
+%{_libdir}/wine/xactengine3_2.dll.so
+%{_libdir}/wine/xactengine3_3.dll.so
+%{_libdir}/wine/xactengine3_4.dll.so
+%{_libdir}/wine/xactengine3_5.dll.so
+%{_libdir}/wine/xactengine3_6.dll.so
+%{_libdir}/wine/xactengine3_7.dll.so
+%endif
 %{_libdir}/wine/xapofx1_1.dll.so
 %{_libdir}/wine/xapofx1_2.dll.so
 %{_libdir}/wine/xapofx1_3.dll.so
