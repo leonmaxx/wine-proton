@@ -22,7 +22,7 @@ Install: `dnf install wine-proton wine-proton-dxvk-native`
 - Enabled support for **VkD3D** for Direct3D 12.
 - Wine XAudio2 implementation replaced with **[FAudio](https://github.com/FNA-XNA/FAudio)** based implementation by Andrew Eikum ([repository](https://github.com/aeikum/wine/tree/faudio-fixups)).
 
-After wine update please update your old wine prefix (don't needed for new prefixes):
+After wine update please update your old wine prefix (not needed for new prefixes):
 ```
 WINEPREFIX=path_to_prefix wine-prefix-update
 ```
