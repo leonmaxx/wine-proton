@@ -28,4 +28,4 @@ After wine packages is updated please update your old wine prefix (not needed fo
 WINEPREFIX=path_to_prefix wine-prefix-update
 ```
   
-To enable/disable **gallium-nine** or **DXVK** run `winecfg` switch to `Staging` tab.
+To enable/disable **gallium-nine** or **DXVK** run `winecfg` and switch to `Staging` tab.
