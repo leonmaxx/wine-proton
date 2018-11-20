@@ -25,7 +25,7 @@ Install: `dnf install wine-proton wine-proton-dxvk-native`
 
 After wine packages is updated please update your old wine prefix (not needed for new prefixes):
 ```
-WINEPREFIX=path_to_prefix wine-prefix-update
+WINEPREFIX=path_to_prefix wine-update-prefix
 ```
   
 To enable/disable **gallium-nine** or **DXVK** run `winecfg` and switch to `Staging` tab.
