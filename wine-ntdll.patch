@@ -737,9 +737,9 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/loader.c b/dlls/ntd
      version_init( wm->ldr.FullDllName.Buffer );
 +    user_shared_data_init();
 +    hidden_exports_init( wm->ldr.FullDllName.Buffer );
-     virtual_set_large_address_space();
- 
-     LdrQueryImageFileExecutionOptions( &peb->ProcessParameters->ImagePathName, globalflagW,
+
+     if (needs_override_large_address_aware(peb->ProcessParameters->ImagePathName.Buffer) > 0)
+         force_large_address_aware = TRUE;
 diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/nt.c b/dlls/ntdll/nt.c
 --- a/dlls/ntdll/nt.c	2018-10-17 15:46:43.000000000 +0300
 +++ b/dlls/ntdll/nt.c	2018-10-28 11:34:40.235626293 +0200
@@ -806,7 +806,7 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/ntdll_misc.h b/dlls
 +++ b/dlls/ntdll/ntdll_misc.h	2018-10-28 11:39:55.723892822 +0200
 @@ -188,6 +188,9 @@ extern void VIRTUAL_SetForceExec( BOOL e
  extern void virtual_release_address_space(void) DECLSPEC_HIDDEN;
- extern void virtual_set_large_address_space(void) DECLSPEC_HIDDEN;
+ extern void virtual_set_large_address_space( BOOL force ) DECLSPEC_HIDDEN;
  extern struct _KUSER_SHARED_DATA *user_shared_data DECLSPEC_HIDDEN;
 +extern struct _KUSER_SHARED_DATA *user_shared_data_external DECLSPEC_HIDDEN;
 +extern void create_user_shared_data_thread(void) DECLSPEC_HIDDEN;

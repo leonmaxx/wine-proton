@@ -11,7 +11,8 @@
 %bcond_without vkd3d
 
 # FAudio free XAudio implementation
-%bcond_without faudio
+#  is default now
+# % bcond_without faudio
 
 # FFMPEG
 %bcond_with ffmpeg
@@ -28,7 +29,7 @@
 
 Name:           wine-proton
 Version:        3.16
-Release:        4%{?dist}
+Release:        6%{?dist}
 Summary:        A compatibility layer for windows applications
 
 Group:          Applications/Emulators
@@ -78,18 +79,14 @@ Source501:      wine-tahoma.conf
 Source502:      wine-README-tahoma
 
 Patch511:       wine-cjk.patch
-Patch512:       wine-ntdll.patch
-Patch513:       wine-winepulse.patch
-Patch514:       wine-bcrypt.patch
-Patch515:       wine-kernel32.patch
+Patch514:		wine-kernel32.patch
+Patch515:		wine-ntdll.patch
 Patch516:		wine-proton-nocrash-to-revert.patch
-Patch517:		wine-native-xaudio2-to-revert.patch
+Patch517:		wine-proton-menubuilder-to-revert.patch
+Patch518:		wine-proton-bcrypt.patch
 
 # dxvk dlls redirects
 Patch520:       wine-dxvk-helper.patch
-
-# faudio support
-Patch530:       wine-faudio.patch
 
 # additional fonts
 Source550:      wine-fonts.patch
@@ -187,10 +184,8 @@ BuildRequires:  libvkd3d-utils-devel
 Requires:       libvkd3d
 %endif
 
-%if 0%{with faudio}
 BuildRequires:  libfaudio-devel
 Requires:       libfaudio
-%endif
 
 Requires:       wine-proton-common = %{version}-%{release}
 Requires:       wine-proton-desktop = %{version}-%{release}
@@ -698,18 +693,13 @@ This package adds the opencl driver for wine.
 %prep
 %setup -q -n wine-proton
 %patch511 -p1 -b.cjk
-%patch512 -p1 -b.ntdll
+%patch514 -p1 -b.krnl
+%patch515 -p1 -b.ntdll
 
-%if 0%{with faudio}
-%patch530 -p1 -b.faudio
-%else
-%patch513 -p1 -b.wpulse
-%patch517 -R -p1 -b.xaudio
-%endif
-
-%patch514 -p1 -b.bcrypt
-%patch515 -p1 -b.krnl
 %patch516 -R -p1 -b.nocrash
+%patch517 -R -p1 -b.mnb
+
+%patch518 -p1 -b.bcrypt
 
 # add fonts
 git apply -p2 %{SOURCE550}
@@ -749,14 +739,12 @@ export CFLAGS="`echo $CFLAGS` -I/usr/include/ffmpeg"
  --without-hal --with-dbus \
  --with-x \
  --with-d3d9-nine \
+ --with-faudio \
 %if 0%{with vkd3d}
  --with-vkd3d \
 %endif
 %ifarch %{arm}
  --with-float-abi=hard \
-%endif
-%if 0%{with faudio}
- --with-faudio \
 %endif
 %ifarch x86_64 aarch64
  --enable-win64 \
@@ -1203,9 +1191,7 @@ fi
 %{_libdir}/wine/wineboot.exe.so
 %{_libdir}/wine/winebrowser.exe.so
 %{_libdir}/wine/wineconsole.exe.so
-%if 0%{?staging}
 %{_libdir}/wine/winemenubuilder.exe.so
-%endif
 %{_libdir}/wine/winecfg.exe.so
 %{_libdir}/wine/winedevice.exe.so
 %{_libdir}/wine/wmplayer.exe.so
@@ -1944,7 +1930,6 @@ fi
 %{_libdir}/wine/x3daudio1_5.dll.so
 %{_libdir}/wine/x3daudio1_6.dll.so
 %{_libdir}/wine/x3daudio1_7.dll.so
-%if 0%{with faudio}
 %{_libdir}/wine/xactengine3_0.dll.so
 %{_libdir}/wine/xactengine3_1.dll.so
 %{_libdir}/wine/xactengine3_2.dll.so
@@ -1953,7 +1938,6 @@ fi
 %{_libdir}/wine/xactengine3_5.dll.so
 %{_libdir}/wine/xactengine3_6.dll.so
 %{_libdir}/wine/xactengine3_7.dll.so
-%endif
 %{_libdir}/wine/xapofx1_1.dll.so
 %{_libdir}/wine/xapofx1_2.dll.so
 %{_libdir}/wine/xapofx1_3.dll.so
