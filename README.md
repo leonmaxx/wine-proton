@@ -20,8 +20,11 @@ dnf install wine-proton wine-proton-dxvk-native wine-proton-dxvk-native.i686
 ```
 
 # Updates
+## Version 3.16-6
+- Updated to Wine-Proton sources to version 3.16-6.
+- Reverted patch that disables `winemenubuilder`.
 ## Version 3.16-4
-- Updated to Wine-Proton 3.16-4.
+- Updated to Wine-Proton sources to version 3.16-4.
 - Added support for **DXVK** native libraries with DLL redirect.
 - Enabled support for **VkD3D** for Direct3D 12.
 - Wine XAudio2 implementation replaced with **[FAudio](https://github.com/FNA-XNA/FAudio)** based implementation by Andrew Eikum ([repository](https://github.com/aeikum/wine/tree/faudio-fixups)).
