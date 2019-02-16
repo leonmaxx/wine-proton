@@ -20,6 +20,8 @@ dnf install wine-proton wine-proton-dxvk-native wine-proton-dxvk-native.i686
 ```
 
 # Updates
+## Version 3.16-7
+- Updated to Wine-Proton sources to version 3.16-7.
 ## Version 3.16-6
 - Updated to Wine-Proton sources to version 3.16-6.
 - Reverted patch that disables `winemenubuilder`.

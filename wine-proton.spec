@@ -29,7 +29,7 @@
 
 Name:           wine-proton
 Version:        3.16
-Release:        6%{?dist}
+Release:        7%{?dist}
 Summary:        A compatibility layer for windows applications
 
 Group:          Applications/Emulators
