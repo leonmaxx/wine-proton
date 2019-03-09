@@ -29,7 +29,7 @@
 
 Name:           wine-proton
 Version:        3.16
-Release:        7%{?dist}
+Release:        8%{?dist}
 Summary:        A compatibility layer for windows applications
 
 Group:          Applications/Emulators
@@ -83,7 +83,6 @@ Patch514:		wine-kernel32.patch
 Patch515:		wine-ntdll.patch
 Patch516:		wine-proton-nocrash-to-revert.patch
 Patch517:		wine-proton-menubuilder-to-revert.patch
-Patch518:		wine-proton-bcrypt.patch
 
 # dxvk dlls redirects
 Patch520:       wine-dxvk-helper.patch
@@ -699,8 +698,6 @@ This package adds the opencl driver for wine.
 %patch516 -R -p1 -b.nocrash
 %patch517 -R -p1 -b.mnb
 
-%patch518 -p1 -b.bcrypt
-
 # add fonts
 git apply -p2 %{SOURCE550}
 
@@ -757,7 +754,7 @@ make %{?_smp_mflags} TARGETFLAGS=""
 %install
 
 %makeinstall \
-        includedir=%{buildroot}%{_includedir}/wine \
+        includedir=%{buildroot}%{_includedir} \
         sysconfdir=%{buildroot}%{_sysconfdir}/wine \
         dlldir=%{buildroot}%{_libdir}/wine \
         LDCONFIG=/bin/true \
