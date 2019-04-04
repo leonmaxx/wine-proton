@@ -28,8 +28,8 @@
 %endif
 
 Name:           wine-proton
-Version:        3.16
-Release:        8%{?dist}
+Version:        4.2
+Release:        1%{?dist}
 Summary:        A compatibility layer for windows applications
 
 Group:          Applications/Emulators
@@ -79,10 +79,8 @@ Source501:      wine-tahoma.conf
 Source502:      wine-README-tahoma
 
 Patch511:       wine-cjk.patch
-Patch514:		wine-kernel32.patch
 Patch515:		wine-ntdll.patch
 Patch516:		wine-proton-nocrash-to-revert.patch
-Patch517:		wine-proton-menubuilder-to-revert.patch
 
 # dxvk dlls redirects
 Patch520:       wine-dxvk-helper.patch
@@ -692,11 +690,9 @@ This package adds the opencl driver for wine.
 %prep
 %setup -q -n wine-proton
 %patch511 -p1 -b.cjk
-%patch514 -p1 -b.krnl
 %patch515 -p1 -b.ntdll
 
 %patch516 -R -p1 -b.nocrash
-%patch517 -R -p1 -b.mnb
 
 # add fonts
 git apply -p2 %{SOURCE550}
@@ -1188,7 +1184,9 @@ fi
 %{_libdir}/wine/wineboot.exe.so
 %{_libdir}/wine/winebrowser.exe.so
 %{_libdir}/wine/wineconsole.exe.so
+%if 0
 %{_libdir}/wine/winemenubuilder.exe.so
+%endif
 %{_libdir}/wine/winecfg.exe.so
 %{_libdir}/wine/winedevice.exe.so
 %{_libdir}/wine/wmplayer.exe.so
@@ -1286,6 +1284,7 @@ fi
 %{_libdir}/wine/api-ms-win-core-processthreads-l1-1-0.dll.so
 %{_libdir}/wine/api-ms-win-core-processthreads-l1-1-1.dll.so
 %{_libdir}/wine/api-ms-win-core-processthreads-l1-1-2.dll.so
+%{_libdir}/wine/api-ms-win-core-processthreads-l1-1-3.dll.so
 %{_libdir}/wine/api-ms-win-core-processtopology-obsolete-l1-1-0.dll.so
 %{_libdir}/wine/api-ms-win-core-profile-l1-1-0.dll.so
 %{_libdir}/wine/api-ms-win-core-psapi-l1-1-0.dll.so
@@ -1335,6 +1334,7 @@ fi
 %{_libdir}/wine/api-ms-win-core-winrt-registration-l1-1-0.dll.so
 %{_libdir}/wine/api-ms-win-core-winrt-roparameterizediid-l1-1-0.dll.so
 %{_libdir}/wine/api-ms-win-core-winrt-string-l1-1-0.dll.so
+%{_libdir}/wine/api-ms-win-core-winrt-string-l1-1-1.dll.so
 %{_libdir}/wine/api-ms-win-core-wow64-l1-1-0.dll.so
 %{_libdir}/wine/api-ms-win-core-wow64-l1-1-1.dll.so
 %{_libdir}/wine/api-ms-win-core-xstate-l1-1-0.dll.so
@@ -1380,6 +1380,7 @@ fi
 %{_libdir}/wine/api-ms-win-mm-time-l1-1-0.dll.so
 %{_libdir}/wine/api-ms-win-ntuser-dc-access-l1-1-0.dll.so
 %{_libdir}/wine/api-ms-win-ntuser-rectangle-l1-1-0.dll.so
+%{_libdir}/wine/api-ms-win-ntuser-sysparams-l1-1-0.dll.so
 %{_libdir}/wine/api-ms-win-perf-legacy-l1-1-0.dll.so
 %{_libdir}/wine/api-ms-win-power-base-l1-1-0.dll.so
 %{_libdir}/wine/api-ms-win-power-setting-l1-1-0.dll.so
@@ -1536,6 +1537,7 @@ fi
 %{_libdir}/wine/ext-ms-win-ntuser-draw-l1-1-0.dll.so
 %{_libdir}/wine/ext-ms-win-ntuser-gui-l1-3-0.dll.so
 %{_libdir}/wine/ext-ms-win-ntuser-keyboard-l1-3-0.dll.so
+%{_libdir}/wine/ext-ms-win-ntuser-misc-l1-2-0.dll.so
 %{_libdir}/wine/ext-ms-win-ntuser-misc-l1-5-1.dll.so
 %{_libdir}/wine/ext-ms-win-ntuser-message-l1-1-1.dll.so
 %{_libdir}/wine/ext-ms-win-ntuser-mouse-l1-1-0.dll.so
@@ -1766,6 +1768,7 @@ fi
 %{_libdir}/wine/qmgrprxy.dll.so
 %{_libdir}/wine/quartz.dll.so
 %{_libdir}/wine/query.dll.so
+%{_libdir}/wine/qwave.dll.so
 %{_libdir}/wine/rasapi32.dll.so
 %{_libdir}/wine/rasdlg.dll.so
 %{_libdir}/wine/regapi.dll.so
@@ -1823,6 +1826,7 @@ fi
 %{_libdir}/wine/tdh.dll.so
 %{_libdir}/wine/tdi.sys.so
 %{_libdir}/wine/traffic.dll.so
+%{_libdir}/wine/tzres.dll.so
 %{_libdir}/wine/ucrtbase.dll.so
 %{_libdir}/wine/uiautomationcore.dll.so
 %{_libdir}/wine/uiribbon.dll.so

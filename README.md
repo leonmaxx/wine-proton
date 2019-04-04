@@ -20,6 +20,8 @@ dnf install wine-proton wine-proton-dxvk-native wine-proton-dxvk-native.i686
 ```
 
 # Updates
+## Version 4.2-1
+- Updated Wine-Proton sources to version 4.2-1.
 ## Version 3.16-8
 - Updated Wine-Proton sources to version 3.16-8.
 ## Version 3.16-7

@@ -1,580 +1,6 @@
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/dbghelp/cpu_i386.c b/dlls/dbghelp/cpu_i386.c
---- a/dlls/dbghelp/cpu_i386.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/dbghelp/cpu_i386.c	2018-10-28 11:42:12.858716653 +0200
-@@ -213,16 +213,16 @@ static BOOL i386_stack_walk(struct cpu_s
-         /* Init done */
-         set_curr_mode((frame->AddrPC.Mode == AddrModeFlat) ? stm_32bit : stm_16bit);
- 
--        /* cur_switch holds address of WOW32Reserved field in TEB in debuggee
-+        /* cur_switch holds address of SystemReserved1[0] field in TEB in debuggee
-          * address space
-          */
-         if (NtQueryInformationThread(csw->hThread, ThreadBasicInformation, &info,
-                                      sizeof(info), NULL) == STATUS_SUCCESS)
-         {
--            curr_switch = (DWORD_PTR)info.TebBaseAddress + FIELD_OFFSET(TEB, WOW32Reserved);
-+            curr_switch = (DWORD_PTR)info.TebBaseAddress + FIELD_OFFSET(TEB, SystemReserved1[0]);
-             if (!sw_read_mem(csw, curr_switch, &p, sizeof(p)))
-             {
--                WARN("Can't read TEB:WOW32Reserved\n");
-+                WARN("Can't read TEB:SystemReserved1[0]\n");
-                 goto done_err;
-             }
-             next_switch = p;
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/kernel32/cpu.c b/dlls/kernel32/cpu.c
---- a/dlls/kernel32/cpu.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/kernel32/cpu.c	2018-10-28 11:39:55.722892824 +0200
-@@ -46,7 +46,7 @@
- 
- WINE_DEFAULT_DEBUG_CHANNEL(reg);
- 
--#define SHARED_DATA     ((KSHARED_USER_DATA*)0x7ffe0000)
-+extern KSHARED_USER_DATA* CDECL __wine_user_shared_data(void);
- 
- /****************************************************************************
-  *		QueryPerformanceCounter (KERNEL32.@)
-@@ -206,7 +206,7 @@ BOOL WINAPI IsProcessorFeaturePresent (
- 	DWORD feature	/* [in] Feature number, (PF_ constants from "winnt.h") */) 
- {
-   if (feature < PROCESSOR_FEATURE_MAX)
--    return SHARED_DATA->ProcessorFeatures[feature];
-+    return __wine_user_shared_data()->ProcessorFeatures[feature];
-   else
-     return FALSE;
- }
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/kernel32/tests/loader.c b/dlls/kernel32/tests/loader.c
---- a/dlls/kernel32/tests/loader.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/kernel32/tests/loader.c	2018-10-28 11:43:06.491660277 +0200
-@@ -1358,6 +1358,100 @@ static void test_filenames(void)
-     DeleteFileA( long_path );
- }
- 
-+static void test_FakeDLL(void)
-+{
-+#if defined(__i386__) || defined(__x86_64__)
-+    NTSTATUS (WINAPI *pNtSetEvent)(HANDLE, ULONG *) = NULL;
-+    IMAGE_EXPORT_DIRECTORY *dir;
-+    HMODULE module = GetModuleHandleA("ntdll.dll");
-+    HANDLE file, map, event;
-+    WCHAR path[MAX_PATH];
-+    DWORD *names, *funcs;
-+    WORD *ordinals;
-+    ULONG size;
-+    void *ptr;
-+    int i;
-+
-+    GetModuleFileNameW(module, path, MAX_PATH);
-+
-+    file = CreateFileW(path, GENERIC_READ | GENERIC_EXECUTE, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0);
-+    ok(file != INVALID_HANDLE_VALUE, "Failed to open %s (error %u)\n", wine_dbgstr_w(path), GetLastError());
-+
-+    map = CreateFileMappingW(file, NULL, PAGE_EXECUTE_READ | SEC_IMAGE, 0, 0, NULL);
-+    ok(map != NULL, "CreateFileMapping failed with error %u\n", GetLastError());
-+    ptr = MapViewOfFile(map, FILE_MAP_READ | FILE_MAP_EXECUTE, 0, 0, 0);
-+    ok(ptr != NULL, "MapViewOfFile failed with error %u\n", GetLastError());
-+
-+    dir = RtlImageDirectoryEntryToData(ptr, TRUE, IMAGE_DIRECTORY_ENTRY_EXPORT, &size);
-+    ok(dir != NULL, "RtlImageDirectoryEntryToData failed\n");
-+
-+    names    = RVAToAddr(dir->AddressOfNames, ptr);
-+    ordinals = RVAToAddr(dir->AddressOfNameOrdinals, ptr);
-+    funcs    = RVAToAddr(dir->AddressOfFunctions, ptr);
-+    ok(dir->NumberOfNames > 0, "Could not find any exported functions\n");
-+
-+    for (i = 0; i < dir->NumberOfNames; i++)
-+    {
-+        DWORD map_rva, dll_rva, map_offset, dll_offset;
-+        char *func_name = RVAToAddr(names[i], ptr);
-+        BYTE *dll_func, *map_func;
-+
-+        /* check only Nt functions for now */
-+        if (strncmp(func_name, "Zw", 2) && strncmp(func_name, "Nt", 2))
-+            continue;
-+
-+        dll_func = (BYTE *)GetProcAddress(module, func_name);
-+        ok(dll_func != NULL, "%s: GetProcAddress returned NULL\n", func_name);
-+#if defined(__i386__)
-+        if (dll_func[0] == 0x90 && dll_func[1] == 0x90 &&
-+            dll_func[2] == 0x90 && dll_func[3] == 0x90)
-+#elif defined(__x86_64__)
-+        if (dll_func[0] == 0x48 && dll_func[1] == 0x83 &&
-+            dll_func[2] == 0xec && dll_func[3] == 0x08)
-+#endif
-+        {
-+            todo_wine ok(0, "%s: Export is a stub-function, skipping\n", func_name);
-+            continue;
-+        }
-+
-+        /* check position in memory */
-+        dll_rva = (DWORD_PTR)dll_func - (DWORD_PTR)module;
-+        map_rva = funcs[ordinals[i]];
-+        ok(map_rva == dll_rva, "%s: Rva of mapped function (0x%x) does not match dll (0x%x)\n",
-+           func_name, dll_rva, map_rva);
-+
-+        /* check position in file */
-+        map_offset = (DWORD_PTR)RtlImageRvaToVa(RtlImageNtHeader(ptr),    ptr,    map_rva, NULL) - (DWORD_PTR)ptr;
-+        dll_offset = (DWORD_PTR)RtlImageRvaToVa(RtlImageNtHeader(module), module, dll_rva, NULL) - (DWORD_PTR)module;
-+        ok(map_offset == dll_offset, "%s: File offset of mapped function (0x%x) does not match dll (0x%x)\n",
-+           func_name, map_offset, dll_offset);
-+
-+        /* check function content */
-+        map_func = RVAToAddr(map_rva, ptr);
-+        ok(!memcmp(map_func, dll_func, 0x20), "%s: Function content does not match!\n", func_name);
-+
-+        if (!strcmp(func_name, "NtSetEvent"))
-+            pNtSetEvent = (void *)map_func;
-+    }
-+
-+    ok(pNtSetEvent != NULL, "Could not find NtSetEvent export\n");
-+    if (pNtSetEvent)
-+    {
-+        event = CreateEventA(NULL, TRUE, FALSE, NULL);
-+        ok(event != NULL, "CreateEvent failed with error %u\n", GetLastError());
-+        pNtSetEvent(event, 0);
-+        ok(WaitForSingleObject(event, 0) == WAIT_OBJECT_0, "Event was not signaled\n");
-+        pNtSetEvent(event, 0);
-+        ok(WaitForSingleObject(event, 0) == WAIT_OBJECT_0, "Event was not signaled\n");
-+        CloseHandle(event);
-+    }
-+
-+    UnmapViewOfFile(ptr);
-+    CloseHandle(map);
-+    CloseHandle(file);
-+#endif
-+}
-+
- /* Verify linking style of import descriptors */
- static void test_ImportDescriptors(void)
- {
-@@ -3657,6 +3751,7 @@ START_TEST(loader)
-     }
- 
-     test_Loader();
-+    test_FakeDLL();
-     test_filenames();
-     test_ResolveDelayLoadedAPI();
-     test_ImportDescriptors();
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/krnl386.exe16/kernel16_private.h b/dlls/krnl386.exe16/kernel16_private.h
---- a/dlls/krnl386.exe16/kernel16_private.h	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/krnl386.exe16/kernel16_private.h	2018-10-28 11:42:12.859716652 +0200
-@@ -168,7 +168,7 @@ extern THHOOK *pThhook DECLSPEC_HIDDEN;
-     (((offset)+(size) <= pModule->mapping_size) ? \
-      (memcpy( buffer, (const char *)pModule->mapping + (offset), (size) ), TRUE) : FALSE)
- 
--#define CURRENT_STACK16 ((STACK16FRAME*)MapSL(PtrToUlong(NtCurrentTeb()->WOW32Reserved)))
-+#define CURRENT_STACK16 ((STACK16FRAME*)MapSL(PtrToUlong(NtCurrentTeb()->SystemReserved1[0])))
- #define CURRENT_DS      (CURRENT_STACK16->ds)
- 
- /* push bytes on the 16-bit stack of a thread; return a segptr to the first pushed byte */
-@@ -176,8 +176,8 @@ static inline SEGPTR stack16_push( int s
- {
-     STACK16FRAME *frame = CURRENT_STACK16;
-     memmove( (char*)frame - size, frame, sizeof(*frame) );
--    NtCurrentTeb()->WOW32Reserved = (char *)NtCurrentTeb()->WOW32Reserved - size;
--    return (SEGPTR)((char *)NtCurrentTeb()->WOW32Reserved + sizeof(*frame));
-+    NtCurrentTeb()->SystemReserved1[0] = (char *)NtCurrentTeb()->SystemReserved1[0] - size;
-+    return (SEGPTR)((char *)NtCurrentTeb()->SystemReserved1[0] + sizeof(*frame));
- }
- 
- /* pop bytes from the 16-bit stack of a thread */
-@@ -185,7 +185,7 @@ static inline void stack16_pop( int size
- {
-     STACK16FRAME *frame = CURRENT_STACK16;
-     memmove( (char*)frame + size, frame, sizeof(*frame) );
--    NtCurrentTeb()->WOW32Reserved = (char *)NtCurrentTeb()->WOW32Reserved + size;
-+    NtCurrentTeb()->SystemReserved1[0] = (char *)NtCurrentTeb()->SystemReserved1[0] + size;
- }
- 
- /* dosmem.c */
-@@ -271,11 +271,12 @@ struct tagSYSLEVEL;
- 
- struct kernel_thread_data
- {
-+    void               *reserved;       /* stack segment pointer */
-     WORD                stack_sel;      /* 16-bit stack selector */
-     WORD                htask16;        /* Win16 task handle */
-     DWORD               sys_count[4];   /* syslevel mutex entry counters */
-     struct tagSYSLEVEL *sys_mutex[4];   /* syslevel mutex pointers */
--    void               *pad[45];        /* change this if you add fields! */
-+    void               *pad[44];        /* change this if you add fields! */
- };
- 
- static inline struct kernel_thread_data *kernel_get_thread_data(void)
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/krnl386.exe16/kernel.c b/dlls/krnl386.exe16/kernel.c
---- a/dlls/krnl386.exe16/kernel.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/krnl386.exe16/kernel.c	2018-10-28 11:42:12.859716652 +0200
-@@ -45,8 +45,8 @@ static void thread_attach(void)
-     /* allocate the 16-bit stack (FIXME: should be done lazily) */
-     HGLOBAL16 hstack = WOWGlobalAlloc16( GMEM_FIXED, 0x10000 );
-     kernel_get_thread_data()->stack_sel = GlobalHandleToSel16( hstack );
--    NtCurrentTeb()->WOW32Reserved = (void *)MAKESEGPTR( kernel_get_thread_data()->stack_sel,
--                                                        0x10000 - sizeof(STACK16FRAME) );
-+    NtCurrentTeb()->SystemReserved1[0] = (void *)MAKESEGPTR( kernel_get_thread_data()->stack_sel,
-+                                                             0x10000 - sizeof(STACK16FRAME) );
-     memset( (char *)GlobalLock16(hstack) + 0x10000 - sizeof(STACK16FRAME), 0, sizeof(STACK16FRAME) );
- }
- 
-@@ -58,7 +58,7 @@ static void thread_detach(void)
- {
-     /* free the 16-bit stack */
-     WOWGlobalFree16( kernel_get_thread_data()->stack_sel );
--    NtCurrentTeb()->WOW32Reserved = 0;
-+    NtCurrentTeb()->SystemReserved1[0] = 0;
-     if (NtCurrentTeb()->Tib.SubSystemTib) TASK_ExitTask();
- }
- 
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/krnl386.exe16/ne_module.c b/dlls/krnl386.exe16/ne_module.c
---- a/dlls/krnl386.exe16/ne_module.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/krnl386.exe16/ne_module.c	2018-10-28 11:42:12.859716652 +0200
-@@ -1244,7 +1244,7 @@ DWORD NE_StartTask(void)
-             sp = pSegTable[SELECTOROF(pModule->ne_sssp)-1].minsize + pModule->ne_stack;
-         sp &= ~1;
-         sp -= sizeof(STACK16FRAME);
--        NtCurrentTeb()->WOW32Reserved = (void *)MAKESEGPTR( GlobalHandleToSel16(hInstance), sp );
-+        NtCurrentTeb()->SystemReserved1[0] = (void *)MAKESEGPTR( GlobalHandleToSel16(hInstance), sp );
- 
-         /* Registers at initialization must be:
-          * ax   zero
-@@ -1274,8 +1274,8 @@ DWORD NE_StartTask(void)
- 
-         TRACE("Starting main program: cs:ip=%04x:%04x ds=%04x ss:sp=%04x:%04x\n",
-               context.SegCs, context.Eip, context.SegDs,
--              SELECTOROF(NtCurrentTeb()->WOW32Reserved),
--              OFFSETOF(NtCurrentTeb()->WOW32Reserved) );
-+              SELECTOROF(NtCurrentTeb()->SystemReserved1[0]),
-+              OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) );
- 
-         WOWCallback16Ex( 0, WCB16_REGS, 0, NULL, (DWORD *)&context );
-         ExitThread( LOWORD(context.Eax) );
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/krnl386.exe16/ne_segment.c b/dlls/krnl386.exe16/ne_segment.c
---- a/dlls/krnl386.exe16/ne_segment.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/krnl386.exe16/ne_segment.c	2018-10-28 11:42:12.860716651 +0200
-@@ -378,9 +378,9 @@ BOOL NE_LoadSegment( NE_MODULE *pModule,
-         DWORD ret;
- 
-  	selfloadheader = MapSL( MAKESEGPTR(SEL(pSegTable->hSeg),0) );
--        oldstack = NtCurrentTeb()->WOW32Reserved;
--        NtCurrentTeb()->WOW32Reserved = (void *)MAKESEGPTR(pModule->self_loading_sel,
--                                                           0xff00 - sizeof(STACK16FRAME));
-+        oldstack = NtCurrentTeb()->SystemReserved1[0];
-+        NtCurrentTeb()->SystemReserved1[0] = (void *)MAKESEGPTR(pModule->self_loading_sel,
-+                                                                0xff00 - sizeof(STACK16FRAME));
- 
-         hFile16 = NE_OpenFile( pModule );
-         TRACE_(dll)("Call LoadAppSegProc(hmodule=0x%04x,hf=%x,segnum=%d)\n",
-@@ -392,7 +392,7 @@ BOOL NE_LoadSegment( NE_MODULE *pModule,
-         pSeg->hSeg = LOWORD(ret);
-         TRACE_(dll)("Ret LoadAppSegProc: hSeg=0x%04x\n", pSeg->hSeg);
-         _lclose16( hFile16 );
--        NtCurrentTeb()->WOW32Reserved = oldstack;
-+        NtCurrentTeb()->SystemReserved1[0] = oldstack;
- 
-         pSeg->flags |= NE_SEGFLAGS_LOADED;
-         return TRUE;
-@@ -484,9 +484,9 @@ BOOL NE_LoadAllSegments( NE_MODULE *pMod
-         sel = GlobalAlloc16( GMEM_ZEROINIT, 0xFF00 );
-         pModule->self_loading_sel = SEL(sel);
-         FarSetOwner16( sel, pModule->self );
--        oldstack = NtCurrentTeb()->WOW32Reserved;
--        NtCurrentTeb()->WOW32Reserved = (void *)MAKESEGPTR(pModule->self_loading_sel,
--                                                           0xff00 - sizeof(STACK16FRAME) );
-+        oldstack = NtCurrentTeb()->SystemReserved1[0];
-+        NtCurrentTeb()->SystemReserved1[0] = (void *)MAKESEGPTR(pModule->self_loading_sel,
-+                                                                0xff00 - sizeof(STACK16FRAME) );
- 
-         hFile16 = NE_OpenFile(pModule);
-         TRACE_(dll)("CallBootAppProc(hModule=0x%04x,hf=0x%04x)\n",
-@@ -496,7 +496,7 @@ BOOL NE_LoadAllSegments( NE_MODULE *pMod
-         WOWCallback16Ex( (DWORD)selfloadheader->BootApp, WCB16_PASCAL, sizeof(args), args, NULL );
- 	TRACE_(dll)("Return from CallBootAppProc\n");
-         _lclose16(hFile16);
--        NtCurrentTeb()->WOW32Reserved = oldstack;
-+        NtCurrentTeb()->SystemReserved1[0] = oldstack;
- 
-         for (i = 2; i <= pModule->ne_cseg; i++)
-             if (!NE_LoadSegment( pModule, i )) return FALSE;
-@@ -693,7 +693,7 @@ static BOOL NE_InitDLL( NE_MODULE *pModu
-     context.SegGs = wine_get_gs();
-     context.SegCs = SEL(pSegTable[SELECTOROF(pModule->ne_csip)-1].hSeg);
-     context.Eip   = OFFSETOF(pModule->ne_csip);
--    context.Ebp   = OFFSETOF(NtCurrentTeb()->WOW32Reserved) + FIELD_OFFSET(STACK16FRAME,bp);
-+    context.Ebp   = OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) + FIELD_OFFSET(STACK16FRAME,bp);
- 
-     pModule->ne_csip = 0;  /* Don't initialize it twice */
-     TRACE_(dll)("Calling LibMain for %.*s, cs:ip=%04x:%04x ds=%04x di=%04x cx=%04x\n",
-@@ -798,7 +798,7 @@ static void NE_CallDllEntryPoint( NE_MOD
-         context.SegGs = wine_get_gs();
-         context.SegCs = HIWORD(entryPoint);
-         context.Eip   = LOWORD(entryPoint);
--        context.Ebp   = OFFSETOF(NtCurrentTeb()->WOW32Reserved) + FIELD_OFFSET(STACK16FRAME,bp);
-+        context.Ebp   = OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) + FIELD_OFFSET(STACK16FRAME,bp);
- 
-         args[7] = HIWORD(dwReason);
-         args[6] = LOWORD(dwReason);
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/krnl386.exe16/task.c b/dlls/krnl386.exe16/task.c
---- a/dlls/krnl386.exe16/task.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/krnl386.exe16/task.c	2018-10-28 11:42:12.860716651 +0200
-@@ -630,7 +630,7 @@ void WINAPI InitTask16( CONTEXT *context
- 
-     /* Initialize the INSTANCEDATA structure */
-     pinstance = MapSL( MAKESEGPTR(CURRENT_DS, 0) );
--    pinstance->stackmin    = OFFSETOF(NtCurrentTeb()->WOW32Reserved) + sizeof( STACK16FRAME );
-+    pinstance->stackmin    = OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) + sizeof( STACK16FRAME );
-     pinstance->stackbottom = pinstance->stackmin; /* yup, that's right. Confused me too. */
-     pinstance->stacktop    = ( pinstance->stackmin > LOWORD(context->Ebx) ?
-                                pinstance->stackmin - LOWORD(context->Ebx) : 0 ) + 150;
-@@ -1101,14 +1101,14 @@ void WINAPI SwitchStackTo16( WORD seg, W
- 
-     if (!(pData = GlobalLock16( seg ))) return;
-     TRACE("old=%04x:%04x new=%04x:%04x\n",
--          SELECTOROF( NtCurrentTeb()->WOW32Reserved ),
--          OFFSETOF( NtCurrentTeb()->WOW32Reserved ), seg, ptr );
-+          SELECTOROF( NtCurrentTeb()->SystemReserved1[0] ),
-+          OFFSETOF( NtCurrentTeb()->SystemReserved1[0] ), seg, ptr );
- 
-     /* Save the old stack */
- 
-     oldFrame = CURRENT_STACK16;
-     /* pop frame + args and push bp */
--    pData->old_ss_sp   = (SEGPTR)NtCurrentTeb()->WOW32Reserved + sizeof(STACK16FRAME)
-+    pData->old_ss_sp   = (SEGPTR)NtCurrentTeb()->SystemReserved1[0] + sizeof(STACK16FRAME)
-                            + 2 * sizeof(WORD);
-     *(WORD *)MapSL(pData->old_ss_sp) = oldFrame->bp;
-     pData->stacktop    = top;
-@@ -1122,7 +1122,7 @@ void WINAPI SwitchStackTo16( WORD seg, W
-      */
-     copySize = oldFrame->bp - OFFSETOF(pData->old_ss_sp);
-     copySize += 3 * sizeof(WORD) + sizeof(STACK16FRAME);
--    NtCurrentTeb()->WOW32Reserved = (void *)MAKESEGPTR( seg, ptr - copySize );
-+    NtCurrentTeb()->SystemReserved1[0] = (void *)MAKESEGPTR( seg, ptr - copySize );
-     newFrame = CURRENT_STACK16;
- 
-     /* Copy the stack frame and the local variables to the new stack */
-@@ -1141,7 +1141,7 @@ void WINAPI SwitchStackBack16( CONTEXT *
-     STACK16FRAME *oldFrame, *newFrame;
-     INSTANCEDATA *pData;
- 
--    if (!(pData = GlobalLock16(SELECTOROF(NtCurrentTeb()->WOW32Reserved))))
-+    if (!(pData = GlobalLock16(SELECTOROF(NtCurrentTeb()->SystemReserved1[0]))))
-         return;
-     if (!pData->old_ss_sp)
-     {
-@@ -1160,7 +1160,7 @@ void WINAPI SwitchStackBack16( CONTEXT *
- 
-     /* Switch back to the old stack */
- 
--    NtCurrentTeb()->WOW32Reserved = (void *)(pData->old_ss_sp - sizeof(STACK16FRAME));
-+    NtCurrentTeb()->SystemReserved1[0] = (void *)(pData->old_ss_sp - sizeof(STACK16FRAME));
-     context->SegSs = SELECTOROF(pData->old_ss_sp);
-     context->Esp   = OFFSETOF(pData->old_ss_sp) - sizeof(DWORD); /*ret addr*/
-     pData->old_ss_sp = 0;
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/krnl386.exe16/thunk.c b/dlls/krnl386.exe16/thunk.c
---- a/dlls/krnl386.exe16/thunk.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/krnl386.exe16/thunk.c	2018-10-28 11:42:12.861716650 +0200
-@@ -437,7 +437,7 @@ void WINAPI __regs_QT_Thunk( CONTEXT *co
-     context16.Eip   = LOWORD(context->Edx);
-     /* point EBP to the STACK16FRAME on the stack
-      * for the call_to_16 to set up the register content on calling */
--    context16.Ebp   = OFFSETOF(NtCurrentTeb()->WOW32Reserved) + FIELD_OFFSET(STACK16FRAME,bp);
-+    context16.Ebp   = OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) + FIELD_OFFSET(STACK16FRAME,bp);
- 
-     /*
-      * used to be (problematic):
-@@ -459,7 +459,7 @@ void WINAPI __regs_QT_Thunk( CONTEXT *co
-      * the number of parameters that the Win16 function
-      * accepted (that it popped from the corresponding Win16 stack) */
-     context->Esp +=   LOWORD(context16.Esp) -
--                        ( OFFSETOF(NtCurrentTeb()->WOW32Reserved) - argsize );
-+                        ( OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) - argsize );
- }
- DEFINE_REGS_ENTRYPOINT( QT_Thunk )
- 
-@@ -565,7 +565,7 @@ void WINAPI __regs_FT_Thunk( CONTEXT *co
-     context16.SegGs = wine_get_gs();
-     context16.SegCs = HIWORD(callTarget);
-     context16.Eip   = LOWORD(callTarget);
--    context16.Ebp   = OFFSETOF(NtCurrentTeb()->WOW32Reserved) + FIELD_OFFSET(STACK16FRAME,bp);
-+    context16.Ebp   = OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) + FIELD_OFFSET(STACK16FRAME,bp);
- 
-     argsize  = context->Ebp-context->Esp-0x40;
-     if (argsize > sizeof(newstack)) argsize = sizeof(newstack);
-@@ -577,8 +577,8 @@ void WINAPI __regs_FT_Thunk( CONTEXT *co
- 	if (mapESPrelative & (1 << i))
- 	{
- 	    SEGPTR *arg = (SEGPTR *)newstack[i];
--	    *arg = MAKESEGPTR(SELECTOROF(NtCurrentTeb()->WOW32Reserved),
--                              OFFSETOF(NtCurrentTeb()->WOW32Reserved) - argsize
-+	    *arg = MAKESEGPTR(SELECTOROF(NtCurrentTeb()->SystemReserved1[0]),
-+                              OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) - argsize
-                               + (*(LPBYTE *)arg - oldstack));
- 	}
- 
-@@ -588,7 +588,7 @@ void WINAPI __regs_FT_Thunk( CONTEXT *co
-     context->Ecx = context16.Ecx;
- 
-     context->Esp +=   LOWORD(context16.Esp) -
--                        ( OFFSETOF(NtCurrentTeb()->WOW32Reserved) - argsize );
-+                        ( OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) - argsize );
- 
-     /* Copy modified buffers back to 32-bit stack */
-     memcpy( oldstack, newstack, argsize );
-@@ -725,7 +725,7 @@ void WINAPI __regs_Common32ThkLS( CONTEX
-     context16.Edi   = LOWORD(context->Ecx);
-     context16.SegCs = HIWORD(context->Eax);
-     context16.Eip   = LOWORD(context->Eax);
--    context16.Ebp   = OFFSETOF(NtCurrentTeb()->WOW32Reserved) + FIELD_OFFSET(STACK16FRAME,bp);
-+    context16.Ebp   = OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) + FIELD_OFFSET(STACK16FRAME,bp);
- 
-     argsize = HIWORD(context->Edx) * 4;
- 
-@@ -783,7 +783,7 @@ void WINAPI __regs_OT_32ThkLSF( CONTEXT
-     context16.SegGs = wine_get_gs();
-     context16.SegCs = HIWORD(context->Edx);
-     context16.Eip   = LOWORD(context->Edx);
--    context16.Ebp   = OFFSETOF(NtCurrentTeb()->WOW32Reserved) + FIELD_OFFSET(STACK16FRAME,bp);
-+    context16.Ebp   = OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) + FIELD_OFFSET(STACK16FRAME,bp);
- 
-     argsize = 2 * *(WORD *)context->Esp + 2;
- 
-@@ -796,7 +796,7 @@ void WINAPI __regs_OT_32ThkLSF( CONTEXT
-             (LPBYTE)CURRENT_STACK16 - argsize, argsize );
- 
-     context->Esp +=   LOWORD(context16.Esp) -
--                        ( OFFSETOF(NtCurrentTeb()->WOW32Reserved) - argsize );
-+                        ( OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) - argsize );
- }
- DEFINE_REGS_ENTRYPOINT( OT_32ThkLSF )
- 
-@@ -1252,26 +1252,26 @@ void WINAPI __regs_K32Thk1632Prolog( CON
-       DWORD argSize = context->Ebp - context->Esp;
-       char *stack16 = (char *)context->Esp - 4;
-       STACK16FRAME *frame16 = (STACK16FRAME *)stack16 - 1;
--      STACK32FRAME *frame32 = NtCurrentTeb()->WOW32Reserved;
-+      STACK32FRAME *frame32 = NtCurrentTeb()->SystemReserved1[0];
-       char *stack32 = (char *)frame32 - argSize;
-       WORD  stackSel  = SELECTOROF(frame32->frame16);
-       DWORD stackBase = GetSelectorBase(stackSel);
- 
-       TRACE("before SYSTHUNK hack: EBP: %08x ESP: %08x cur_stack: %p\n",
--            context->Ebp, context->Esp, NtCurrentTeb()->WOW32Reserved);
-+            context->Ebp, context->Esp, NtCurrentTeb()->SystemReserved1[0]);
- 
-       memset(frame16, '\0', sizeof(STACK16FRAME));
-       frame16->frame32 = frame32;
-       frame16->ebp = context->Ebp;
- 
-       memcpy(stack32, stack16, argSize);
--      NtCurrentTeb()->WOW32Reserved = (void *)MAKESEGPTR(stackSel, (DWORD)frame16 - stackBase);
-+      NtCurrentTeb()->SystemReserved1[0] = (void *)MAKESEGPTR(stackSel, (DWORD)frame16 - stackBase);
- 
-       context->Esp = (DWORD)stack32 + 4;
-       context->Ebp = context->Esp + argSize;
- 
-       TRACE("after  SYSTHUNK hack: EBP: %08x ESP: %08x cur_stack: %p\n",
--            context->Ebp, context->Esp, NtCurrentTeb()->WOW32Reserved);
-+            context->Ebp, context->Esp, NtCurrentTeb()->SystemReserved1[0]);
-    }
- 
-     /* entry_point is never used again once the entry point has
-@@ -1294,7 +1294,7 @@ void WINAPI __regs_K32Thk1632Epilog( CON
-    if (   code[5] == 0xFF && code[6] == 0x55 && code[7] == 0xFC
-        && code[13] == 0x66 && code[14] == 0xCB)
-    {
--      STACK16FRAME *frame16 = MapSL((SEGPTR)NtCurrentTeb()->WOW32Reserved);
-+      STACK16FRAME *frame16 = MapSL((SEGPTR)NtCurrentTeb()->SystemReserved1[0]);
-       char *stack16 = (char *)(frame16 + 1);
-       DWORD argSize = frame16->ebp - (DWORD)stack16;
-       char *stack32 = (char *)frame16->frame32 - argSize;
-@@ -1302,15 +1302,15 @@ void WINAPI __regs_K32Thk1632Epilog( CON
-       DWORD nArgsPopped = context->Esp - (DWORD)stack32;
- 
-       TRACE("before SYSTHUNK hack: EBP: %08x ESP: %08x cur_stack: %p\n",
--            context->Ebp, context->Esp, NtCurrentTeb()->WOW32Reserved);
-+            context->Ebp, context->Esp, NtCurrentTeb()->SystemReserved1[0]);
- 
--      NtCurrentTeb()->WOW32Reserved = frame16->frame32;
-+      NtCurrentTeb()->SystemReserved1[0] = frame16->frame32;
- 
-       context->Esp = (DWORD)stack16 + nArgsPopped;
-       context->Ebp = frame16->ebp;
- 
-       TRACE("after  SYSTHUNK hack: EBP: %08x ESP: %08x cur_stack: %p\n",
--            context->Ebp, context->Esp, NtCurrentTeb()->WOW32Reserved);
-+            context->Ebp, context->Esp, NtCurrentTeb()->SystemReserved1[0]);
-    }
- }
- DEFINE_REGS_ENTRYPOINT( K32Thk1632Epilog )
-@@ -2325,7 +2325,7 @@ void WINAPI Throw16( LPCATCHBUF lpbuf, I
-     frame32 = pFrame->frame32;
-     while (frame32 && frame32->frame16)
-     {
--        if (OFFSETOF(frame32->frame16) < OFFSETOF(NtCurrentTeb()->WOW32Reserved))
-+        if (OFFSETOF(frame32->frame16) < OFFSETOF(NtCurrentTeb()->SystemReserved1[0]))
-             break;  /* Something strange is going on */
-         if (OFFSETOF(frame32->frame16) > lpbuf[2])
-         {
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/krnl386.exe16/wowthunk.c b/dlls/krnl386.exe16/wowthunk.c
---- a/dlls/krnl386.exe16/wowthunk.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/krnl386.exe16/wowthunk.c	2018-10-28 11:42:12.862716649 +0200
-@@ -135,7 +135,7 @@ static DWORD call16_handler( EXCEPTION_R
-     {
-         /* unwinding: restore the stack pointer in the TEB, and leave the Win16 mutex */
-         STACK32FRAME *frame32 = CONTAINING_RECORD(frame, STACK32FRAME, frame);
--        NtCurrentTeb()->WOW32Reserved = (void *)frame32->frame16;
-+        NtCurrentTeb()->SystemReserved1[0] = (void *)frame32->frame16;
-         _LeaveWin16Lock();
-     }
-     else if (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION ||
-@@ -420,8 +420,8 @@ BOOL WINAPI K32WOWCallback16Ex( DWORD vp
-             TRACE_(relay)( "\1CallTo16(func=%04x:%04x", context->SegCs, LOWORD(context->Eip) );
-             while (count) TRACE_(relay)( ",%04x", wstack[--count] );
-             TRACE_(relay)( ") ss:sp=%04x:%04x ax=%04x bx=%04x cx=%04x dx=%04x si=%04x di=%04x bp=%04x ds=%04x es=%04x\n",
--                           SELECTOROF(NtCurrentTeb()->WOW32Reserved),
--                           OFFSETOF(NtCurrentTeb()->WOW32Reserved),
-+                           SELECTOROF(NtCurrentTeb()->SystemReserved1[0]),
-+                           OFFSETOF(NtCurrentTeb()->SystemReserved1[0]),
-                            (WORD)context->Eax, (WORD)context->Ebx, (WORD)context->Ecx,
-                            (WORD)context->Edx, (WORD)context->Esi, (WORD)context->Edi,
-                            (WORD)context->Ebp, (WORD)context->SegDs, (WORD)context->SegEs );
-@@ -453,8 +453,8 @@ BOOL WINAPI K32WOWCallback16Ex( DWORD vp
-         if (TRACE_ON(relay))
-         {
-             TRACE_(relay)( "\1RetFrom16() ss:sp=%04x:%04x ax=%04x bx=%04x cx=%04x dx=%04x bp=%04x sp=%04x\n",
--                           SELECTOROF(NtCurrentTeb()->WOW32Reserved),
--                           OFFSETOF(NtCurrentTeb()->WOW32Reserved),
-+                           SELECTOROF(NtCurrentTeb()->SystemReserved1[0]),
-+                           OFFSETOF(NtCurrentTeb()->SystemReserved1[0]),
-                            (WORD)context->Eax, (WORD)context->Ebx, (WORD)context->Ecx,
-                            (WORD)context->Edx, (WORD)context->Ebp, (WORD)context->Esp );
-             SYSLEVEL_CheckNotLevel( 2 );
-@@ -470,10 +470,10 @@ BOOL WINAPI K32WOWCallback16Ex( DWORD vp
-             WORD * wstack = (WORD *)stack;
- 
-             TRACE_(relay)( "\1CallTo16(func=%04x:%04x,ds=%04x",
--                           HIWORD(vpfn16), LOWORD(vpfn16), SELECTOROF(NtCurrentTeb()->WOW32Reserved) );
-+                           HIWORD(vpfn16), LOWORD(vpfn16), SELECTOROF(NtCurrentTeb()->SystemReserved1[0]) );
-             while (count) TRACE_(relay)( ",%04x", wstack[--count] );
--            TRACE_(relay)( ") ss:sp=%04x:%04x\n", SELECTOROF(NtCurrentTeb()->WOW32Reserved),
--                           OFFSETOF(NtCurrentTeb()->WOW32Reserved) );
-+            TRACE_(relay)( ") ss:sp=%04x:%04x\n", SELECTOROF(NtCurrentTeb()->SystemReserved1[0]),
-+                           OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) );
-             SYSLEVEL_CheckNotLevel( 2 );
-         }
- 
-@@ -496,8 +496,8 @@ BOOL WINAPI K32WOWCallback16Ex( DWORD vp
-         if (TRACE_ON(relay))
-         {
-             TRACE_(relay)( "\1RetFrom16() ss:sp=%04x:%04x retval=%08x\n",
--                           SELECTOROF(NtCurrentTeb()->WOW32Reserved),
--                           OFFSETOF(NtCurrentTeb()->WOW32Reserved), ret );
-+                           SELECTOROF(NtCurrentTeb()->SystemReserved1[0]),
-+                           OFFSETOF(NtCurrentTeb()->SystemReserved1[0]), ret );
-             SYSLEVEL_CheckNotLevel( 2 );
-         }
-     }
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
---- a/dlls/ntdll/loader.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/ntdll/loader.c	2018-10-28 11:39:55.723892822 +0200
+diff -purN a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+--- a/dlls/ntdll/loader.c	2019-03-21 15:28:26.000000000 +0200
++++ b/dlls/ntdll/loader.c	2019-03-27 19:02:05.324026535 +0200
 @@ -68,9 +68,12 @@ typedef void  (CALLBACK *LDRENUMPROC)(LD
  const WCHAR system_dir[] = {'C',':','\\','w','i','n','d','o','w','s','\\',
                              's','y','s','t','e','m','3','2','\\',0};
@@ -588,7 +14,7 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/loader.c b/dlls/ntd
  
  struct ldr_notification
  {
-@@ -1598,6 +1601,96 @@ NTSTATUS WINAPI LdrUnlockLoaderLock( ULO
+@@ -1602,6 +1605,96 @@ NTSTATUS WINAPI LdrUnlockLoaderLock( ULO
  }
  
  
@@ -685,7 +111,7 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/loader.c b/dlls/ntd
  /******************************************************************
   *		LdrGetProcedureAddress  (NTDLL.@)
   */
-@@ -1618,7 +1711,7 @@ NTSTATUS WINAPI LdrGetProcedureAddress(H
+@@ -1622,7 +1715,7 @@ NTSTATUS WINAPI LdrGetProcedureAddress(H
          LPCWSTR load_path = NtCurrentTeb()->Peb->ProcessParameters->DllPath.Buffer;
          void *proc = name ? find_named_export( module, exports, exp_size, name->Buffer, -1, load_path )
                            : find_ordinal_export( module, exports, exp_size, ord - exports->Base, load_path );
@@ -694,7 +120,7 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/loader.c b/dlls/ntd
          {
              *address = proc;
              ret = STATUS_SUCCESS;
-@@ -3318,6 +3411,36 @@ static void load_global_options(void)
+@@ -3368,6 +3461,36 @@ PIMAGE_NT_HEADERS WINAPI RtlImageNtHeade
  }
  
  
@@ -731,19 +157,19 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/loader.c b/dlls/ntd
  /******************************************************************
   *		LdrInitializeThunk (NTDLL.@)
   *
-@@ -3347,6 +3470,8 @@ void WINAPI LdrInitializeThunk( void *ke
-     if (!peb->ProcessParameters->WindowTitle.Buffer)
-         peb->ProcessParameters->WindowTitle = wm->ldr.FullDllName;
+@@ -3671,6 +3794,8 @@ void __wine_process_init(void)
+     NtCurrentTeb()->Peb->LoaderLock = &loader_section;
+     update_user_process_params( &wm->ldr.FullDllName );
      version_init( wm->ldr.FullDllName.Buffer );
 +    user_shared_data_init();
 +    hidden_exports_init( wm->ldr.FullDllName.Buffer );
-
-     if (needs_override_large_address_aware(peb->ProcessParameters->ImagePathName.Buffer) > 0)
-         force_large_address_aware = TRUE;
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/nt.c b/dlls/ntdll/nt.c
---- a/dlls/ntdll/nt.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/ntdll/nt.c	2018-10-28 11:34:40.235626293 +0200
-@@ -2268,11 +2268,13 @@ NTSTATUS WINAPI NtQuerySystemInformation
+     virtual_set_large_address_space(needs_override_large_address_aware(NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer));
+ 
+     LdrQueryImageFileExecutionOptions( &wm->ldr.FullDllName, globalflagW, REG_DWORD,
+diff -purN a/dlls/ntdll/nt.c b/dlls/ntdll/nt.c
+--- a/dlls/ntdll/nt.c	2019-03-21 15:28:26.000000000 +0200
++++ b/dlls/ntdll/nt.c	2019-03-27 18:52:43.287287093 +0200
+@@ -2353,11 +2353,13 @@ NTSTATUS WINAPI NtQuerySystemInformation
          {
              SYSTEM_PROCESS_INFORMATION* spi = SystemInformation;
              SYSTEM_PROCESS_INFORMATION* last = NULL;
@@ -757,7 +183,7 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/nt.c b/dlls/ntdll/n
  
              SERVER_START_REQ( create_snapshot )
              {
-@@ -2305,7 +2307,7 @@ NTSTATUS WINAPI NtQuerySystemInformation
+@@ -2390,7 +2392,7 @@ NTSTATUS WINAPI NtQuerySystemInformation
  
                          if (Length >= len + procstructlen)
                          {
@@ -766,7 +192,7 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/nt.c b/dlls/ntdll/n
                               * vmCounters, ioCounters
                               */
   
-@@ -2320,9 +2322,17 @@ NTSTATUS WINAPI NtQuerySystemInformation
+@@ -2405,9 +2407,17 @@ NTSTATUS WINAPI NtQuerySystemInformation
                              spi->UniqueProcessId = UlongToHandle(reply->pid);
                              spi->ParentProcessId = UlongToHandle(reply->ppid);
                              spi->HandleCount = reply->handles;
@@ -784,7 +210,7 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/nt.c b/dlls/ntdll/n
                          }
                          len += procstructlen;
                      }
-@@ -2358,11 +2368,15 @@ NTSTATUS WINAPI NtQuerySystemInformation
+@@ -2443,11 +2453,15 @@ NTSTATUS WINAPI NtQuerySystemInformation
  
                                      memset(&spi->ti[i], 0, sizeof(spi->ti));
  
@@ -801,12 +227,12 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/nt.c b/dlls/ntdll/n
                                      i++;
                                  }
                              }
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
---- a/dlls/ntdll/ntdll_misc.h	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/ntdll/ntdll_misc.h	2018-10-28 11:39:55.723892822 +0200
-@@ -188,6 +188,9 @@ extern void VIRTUAL_SetForceExec( BOOL e
- extern void virtual_release_address_space(void) DECLSPEC_HIDDEN;
- extern void virtual_set_large_address_space( BOOL force ) DECLSPEC_HIDDEN;
+diff -purN a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+--- a/dlls/ntdll/ntdll_misc.h	2019-03-21 15:28:26.000000000 +0200
++++ b/dlls/ntdll/ntdll_misc.h	2019-03-27 19:02:05.324026535 +0200
+@@ -193,6 +193,9 @@ extern void virtual_set_large_address_sp
+ extern void virtual_fill_image_information( const pe_image_info_t *pe_info,
+                                             SECTION_IMAGE_INFORMATION *info ) DECLSPEC_HIDDEN;
  extern struct _KUSER_SHARED_DATA *user_shared_data DECLSPEC_HIDDEN;
 +extern struct _KUSER_SHARED_DATA *user_shared_data_external DECLSPEC_HIDDEN;
 +extern void create_user_shared_data_thread(void) DECLSPEC_HIDDEN;
@@ -814,9 +240,9 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/ntdll_misc.h b/dlls
  
  /* completion */
  extern NTSTATUS NTDLL_AddCompletion( HANDLE hFile, ULONG_PTR CompletionValue,
-@@ -254,4 +257,13 @@ extern HANDLE keyed_event DECLSPEC_HIDDE
- 
+@@ -298,4 +301,13 @@ extern SYSTEM_CPU_INFORMATION cpu_info D
  NTSTATUS WINAPI RtlHashUnicodeString(PCUNICODE_STRING,BOOLEAN,ULONG,ULONG*);
+ void     WINAPI LdrInitializeThunk(CONTEXT*,void**,ULONG_PTR,ULONG_PTR);
  
 +/* version */
 +extern const char * CDECL NTDLL_wine_get_version(void);
@@ -828,20 +254,20 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/ntdll_misc.h b/dlls
 +                              LARGE_INTEGER *kernel, LARGE_INTEGER *user) DECLSPEC_HIDDEN;
 +extern BOOL read_process_memory_stats(int unix_pid, VM_COUNTERS *pvmi) DECLSPEC_HIDDEN;
  #endif
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
---- a/dlls/ntdll/ntdll.spec	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/ntdll/ntdll.spec	2018-10-28 11:39:18.677946377 +0200
-@@ -1511,3 +1511,6 @@
+diff -purN a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+--- a/dlls/ntdll/ntdll.spec	2019-03-21 15:28:26.000000000 +0200
++++ b/dlls/ntdll/ntdll.spec	2019-03-27 18:57:31.325160941 +0200
+@@ -1525,3 +1525,6 @@
  @ cdecl wine_unix_to_nt_file_name(ptr ptr)
  
  @ cdecl __wine_esync_set_queue_fd(long)
 +
 +# User shared data
 +@ cdecl __wine_user_shared_data()
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/process.c b/dlls/ntdll/process.c
---- a/dlls/ntdll/process.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/ntdll/process.c	2018-10-28 11:34:40.236626292 +0200
-@@ -166,7 +166,7 @@ static void fill_VM_COUNTERS(VM_COUNTERS
+diff -purN a/dlls/ntdll/process.c b/dlls/ntdll/process.c
+--- a/dlls/ntdll/process.c	2019-03-21 15:28:26.000000000 +0200
++++ b/dlls/ntdll/process.c	2019-03-27 18:52:43.288287094 +0200
+@@ -185,7 +185,7 @@ static void fill_VM_COUNTERS(VM_COUNTERS
  
  static void fill_VM_COUNTERS(VM_COUNTERS* pvmi)
  {
@@ -850,120 +276,9 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/process.c b/dlls/nt
  }
  
  #endif
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/signal_i386.c b/dlls/ntdll/signal_i386.c
---- a/dlls/ntdll/signal_i386.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/ntdll/signal_i386.c	2018-10-28 11:42:32.652695847 +0200
-@@ -429,6 +429,48 @@ static wine_signal_handler handlers[256]
- 
- static BOOL fpux_support;  /* whether the CPU supports extended fpu context */
- 
-+extern void DECLSPEC_NORETURN __wine_syscall_dispatcher( void );
-+extern NTSTATUS WINAPI __syscall_NtGetContextThread( HANDLE handle, CONTEXT *context );
-+
-+/* convert from straight ASCII to Unicode without depending on the current codepage */
-+static inline void ascii_to_unicode( WCHAR *dst, const char *src, size_t len )
-+{
-+    while (len--) *dst++ = (unsigned char)*src++;
-+}
-+
-+static void* WINAPI __wine_fakedll_dispatcher( const char *module, ULONG ord )
-+{
-+    UNICODE_STRING name;
-+    NTSTATUS status;
-+    HMODULE base;
-+    WCHAR *moduleW;
-+    void *proc = NULL;
-+    DWORD len = strlen(module);
-+
-+    TRACE( "(%s, %u)\n", debugstr_a(module), ord );
-+
-+    if (!(moduleW = RtlAllocateHeap( GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR) )))
-+        return NULL;
-+
-+    ascii_to_unicode( moduleW, module, len );
-+    moduleW[ len ] = 0;
-+    RtlInitUnicodeString( &name, moduleW );
-+
-+    status = LdrGetDllHandle( NULL, 0, &name, &base );
-+    if (status == STATUS_DLL_NOT_FOUND)
-+        status = LdrLoadDll( NULL, 0, &name, &base );
-+    if (status == STATUS_SUCCESS)
-+        status = LdrAddRefDll( LDR_ADDREF_DLL_PIN, base );
-+    if (status == STATUS_SUCCESS)
-+        status = LdrGetProcedureAddress( base, NULL, ord, &proc );
-+
-+    if (status)
-+        FIXME( "No procedure address found for %s.#%u, status %x\n", debugstr_a(module), ord, status );
-+
-+    RtlFreeHeap( GetProcessHeap(), 0, moduleW );
-+    return proc;
-+}
-+
- enum i386_trap_code
- {
-     TRAP_x86_UNKNOWN    = -1,  /* Unknown fault (TRAP_sig not defined) */
-@@ -839,7 +881,7 @@ static inline void *init_handler( const
-          * SS is still non-system segment. This is why both CS and SS
-          * are checked.
-          */
--        return teb->WOW32Reserved;
-+        return teb->SystemReserved1[0];
-     }
-     return (void *)(ESP_sig(sigcontext) & ~3);
- }
-@@ -1404,7 +1446,7 @@ NTSTATUS CDECL DECLSPEC_HIDDEN __regs_Nt
-         {
-             context->Ebp    = ebp;
-             context->Esp    = (DWORD)&retaddr;
--            context->Eip    = *(&edi - 1);
-+            context->Eip    = (DWORD)__syscall_NtGetContextThread + 18;
-             context->SegCs  = wine_get_cs();
-             context->SegSs  = wine_get_ss();
-             context->EFlags = eflags;
-@@ -2290,6 +2332,8 @@ NTSTATUS signal_alloc_thread( TEB **teb
-         *teb = addr;
-         (*teb)->Tib.Self = &(*teb)->Tib;
-         (*teb)->Tib.ExceptionList = (void *)~0UL;
-+        (*teb)->WOW32Reserved = __wine_syscall_dispatcher;
-+        (*teb)->Spare3 = __wine_fakedll_dispatcher;
-         thread_data = (struct x86_thread_data *)(*teb)->SystemReserved2;
-         if (!(thread_data->fs = wine_ldt_alloc_fs()))
-         {
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
---- a/dlls/ntdll/signal_x86_64.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/ntdll/signal_x86_64.c	2018-10-28 11:43:06.492660276 +0200
-@@ -328,6 +328,8 @@ static inline struct amd64_thread_data *
-     return (struct amd64_thread_data *)NtCurrentTeb()->SystemReserved2;
- }
- 
-+extern void DECLSPEC_NORETURN __wine_syscall_dispatcher( void );
-+
- /***********************************************************************
-  * Dynamic unwind table
-  */
-@@ -3280,6 +3282,7 @@ NTSTATUS signal_alloc_thread( TEB **teb
-     {
-         (*teb)->Tib.Self = &(*teb)->Tib;
-         (*teb)->Tib.ExceptionList = (void *)~0UL;
-+        (*teb)->WOW32Reserved = __wine_syscall_dispatcher;
-     }
-     return status;
- }
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/tests/exception.c b/dlls/ntdll/tests/exception.c
---- a/dlls/ntdll/tests/exception.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/ntdll/tests/exception.c	2018-10-28 11:42:19.315709865 +0200
-@@ -1612,6 +1612,8 @@ static void test_thread_context(void)
-     ok( (char *)context.Eip >= (char *)pNtGetContextThread - 0x10000 &&
-         (char *)context.Eip <= (char *)pNtGetContextThread + 0x10000,
-         "wrong Eip %08x/%08x\n", context.Eip, (DWORD)pNtGetContextThread );
-+    ok( *(WORD *)context.Eip == 0xc483 || *(WORD *)context.Eip == 0x08c2 || *(WORD *)context.Eip == 0x8dc3,
-+        "expected 0xc483 or 0x08c2 or 0x8dc3, got %04x\n", *(WORD *)context.Eip );
-     /* segment registers clear the high word */
-     ok( context.SegCs == LOWORD(expect.SegCs), "wrong SegCs %08x/%08x\n", context.SegCs, expect.SegCs );
-     ok( context.SegDs == LOWORD(expect.SegDs), "wrong SegDs %08x/%08x\n", context.SegDs, expect.SegDs );
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/tests/time.c b/dlls/ntdll/tests/time.c
---- a/dlls/ntdll/tests/time.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/ntdll/tests/time.c	2018-10-28 11:40:05.834878205 +0200
+diff -purN a/dlls/ntdll/tests/time.c b/dlls/ntdll/tests/time.c
+--- a/dlls/ntdll/tests/time.c	2019-03-21 15:28:26.000000000 +0200
++++ b/dlls/ntdll/tests/time.c	2019-03-27 19:10:05.462985308 +0200
 @@ -18,7 +18,9 @@
   * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
   */
@@ -1026,9 +341,9 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/tests/time.c b/dlls
 +    test_NtGetTickCount();
      test_RtlQueryTimeZoneInformation();
  }
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
---- a/dlls/ntdll/thread.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/ntdll/thread.c	2018-10-28 11:43:06.492660276 +0200
+diff -purN a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+--- a/dlls/ntdll/thread.c	2019-03-21 15:28:26.000000000 +0200
++++ b/dlls/ntdll/thread.c	2019-03-27 19:29:29.380064392 +0200
 @@ -23,6 +23,8 @@
  
  #include <assert.h>
@@ -1046,7 +361,7 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/thread.c b/dlls/ntd
  #include "ntdll_misc.h"
  #include "ddk/wdm.h"
  #include "wine/exception.h"
-@@ -53,9 +56,13 @@ WINE_DEFAULT_DEBUG_CHANNEL(thread);
+@@ -53,7 +56,9 @@ WINE_DEFAULT_DEBUG_CHANNEL(thread);
  #define PTHREAD_STACK_MIN 16384
  #endif
  
@@ -1056,15 +371,12 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/thread.c b/dlls/ntd
 +struct _KUSER_SHARED_DATA *user_shared_data = &user_shared_data_internal;
  static const WCHAR default_windirW[] = {'C',':','\\','w','i','n','d','o','w','s',0};
  
-+extern void DECLSPEC_NORETURN __wine_syscall_dispatcher( void );
-+
- PUNHANDLED_EXCEPTION_FILTER unhandled_exception_filter = NULL;
  void (WINAPI *kernel32_start_process)(LPTHREAD_START_ROUTINE,void*) = NULL;
+@@ -148,6 +153,89 @@ static ULONG_PTR get_image_addr(void)
+ }
+ #endif
  
-@@ -85,6 +92,88 @@ static RTL_CRITICAL_SECTION_DEBUG critse
- };
- static RTL_CRITICAL_SECTION peb_lock = { &critsect_debug, -1, 0, 0, 0, 0 };
- 
++
 +BOOL read_process_time(int unix_pid, int unix_tid, unsigned long clk_tck,
 +                       LARGE_INTEGER *kernel, LARGE_INTEGER *user)
 +{
@@ -1148,12 +460,38 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/thread.c b/dlls/ntd
 +}
 +
  /***********************************************************************
-  *           get_unicode_string
+  *           thread_init
   *
-@@ -267,6 +356,79 @@ static ULONG_PTR get_image_addr(void)
- }
- #endif
+@@ -161,7 +249,6 @@ void thread_init(void)
+     void *addr;
+     BOOL suspend;
+     SIZE_T size, info_size;
+-    LARGE_INTEGER now;
+     NTSTATUS status;
+     struct ntdll_thread_data *thread_data;
+     static struct debug_info debug_info;  /* debug info for initial thread */
+@@ -179,7 +266,7 @@ void thread_init(void)
+         MESSAGE( "wine: failed to map the shared user data: %08x\n", status );
+         exit(1);
+     }
+-    user_shared_data = addr;
++	user_shared_data_external = addr;
+     memcpy( user_shared_data->NtSystemRoot, default_windirW, sizeof(default_windirW) );
  
+     /* allocate and initialize the PEB */
+@@ -256,20 +343,85 @@ void thread_init(void)
+ 
+     init_user_process_params( info_size );
+ 
+-    /* initialize time values in user_shared_data */
++	/* initialize user_shared_data */
++    __wine_user_shared_data();
++    fill_cpu_info();
++
++    NtCreateKeyedEvent( &keyed_event, GENERIC_READ | GENERIC_WRITE, NULL, 0 );
++}
++
++
 +
 +/**************************************************************************
 + *  __wine_user_shared_data   (NTDLL.@)
@@ -1168,7 +506,12 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/thread.c b/dlls/ntd
 +    
 +    while (interlocked_cmpxchg( &spinlock, 1, 0 ) != 0);
 +    
-+    NtQuerySystemTime( &now );
+     NtQuerySystemTime( &now );
+-    user_shared_data->SystemTime.LowPart = now.u.LowPart;
+-    user_shared_data->SystemTime.High1Time = user_shared_data->SystemTime.High2Time = now.u.HighPart;
+-    user_shared_data->u.TickCountQuad = (now.QuadPart - server_start_time) / 10000;
+-    user_shared_data->u.TickCount.High2Time = user_shared_data->u.TickCount.High1Time;
+-    user_shared_data->TickCountLowDeprecated = user_shared_data->u.TickCount.LowPart;
 +    user_shared_data->SystemTime.High2Time = now.u.HighPart;
 +    user_shared_data->SystemTime.LowPart   = now.u.LowPart;
 +    user_shared_data->SystemTime.High1Time = now.u.HighPart;
@@ -1183,12 +526,16 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/thread.c b/dlls/ntd
 +    user_shared_data->u.TickCount.LowPart    = interrupt.LowPart;
 +    user_shared_data->u.TickCount.High1Time  = interrupt.HighPart;
 +    user_shared_data->TickCountLowDeprecated = interrupt.LowPart;
-+    user_shared_data->TickCountMultiplier = 1 << 24;
-+    
+     user_shared_data->TickCountMultiplier = 1 << 24;
+ 
+-    fill_cpu_info();
+-
+     esync_init();
+ 
+-    NtCreateKeyedEvent( &keyed_event, GENERIC_READ | GENERIC_WRITE, NULL, 0 );
 +    spinlock = 0;
 +    return (BYTE *)user_shared_data;
 +}
-+
 +
 +static void *user_shared_data_thread(void *arg)
 +{
@@ -1224,59 +571,10 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/thread.c b/dlls/ntd
 +    pthread_attr_setstacksize(&attr, 0x10000);
 +    pthread_create(&thread, &attr, user_shared_data_thread, NULL);
 +    pthread_attr_destroy(&attr);
-+}
-+
-+
- /***********************************************************************
-  *           thread_init
-  *
-@@ -281,7 +443,6 @@ HANDLE thread_init(void)
-     BOOL suspend;
-     SIZE_T size, info_size;
-     HANDLE exe_file = 0;
--    LARGE_INTEGER now;
-     NTSTATUS status;
-     struct ntdll_thread_data *thread_data;
-     static struct debug_info debug_info;  /* debug info for initial thread */
-@@ -299,7 +460,7 @@ HANDLE thread_init(void)
-         MESSAGE( "wine: failed to map the shared user data: %08x\n", status );
-         exit(1);
-     }
--    user_shared_data = addr;
-+    user_shared_data_external = addr;
-     memcpy( user_shared_data->NtSystemRoot, default_windirW, sizeof(default_windirW) );
+ }
  
-     /* allocate and initialize the PEB */
-@@ -337,6 +498,10 @@ HANDLE thread_init(void)
-     InitializeListHead( &ldr.InInitializationOrderModuleList );
-     *(ULONG_PTR *)peb->Reserved = get_image_addr();
  
-+#if defined(__APPLE__) && defined(__x86_64__)
-+    *((DWORD*)((char*)user_shared_data_external + 0x1000)) = __wine_syscall_dispatcher;
-+#endif
-+
-     /*
-      * Starting with Vista, the first user to log on has session id 1.
-      * Session id 0 is for processes that don't interact with the user (like services).
-@@ -395,15 +560,8 @@ HANDLE thread_init(void)
-             wine_server_fd_to_handle( 2, GENERIC_WRITE|SYNCHRONIZE, OBJ_INHERIT, &params.hStdError );
-     }
- 
--    /* initialize time values in user_shared_data */
--    NtQuerySystemTime( &now );
--    user_shared_data->SystemTime.LowPart = now.u.LowPart;
--    user_shared_data->SystemTime.High1Time = user_shared_data->SystemTime.High2Time = now.u.HighPart;
--    user_shared_data->u.TickCountQuad = (now.QuadPart - server_start_time) / 10000;
--    user_shared_data->u.TickCount.High2Time = user_shared_data->u.TickCount.High1Time;
--    user_shared_data->TickCountLowDeprecated = user_shared_data->u.TickCount.LowPart;
--    user_shared_data->TickCountMultiplier = 1 << 24;
--
-+    /* initialize user_shared_data */
-+    __wine_user_shared_data();
-     fill_cpu_info();
- 
-     esync_init();
-@@ -1014,7 +1172,10 @@ NTSTATUS WINAPI NtQueryInformationThread
+@@ -888,7 +1040,10 @@ NTSTATUS WINAPI NtQueryInformationThread
      case ThreadTimes:
          {
              KERNEL_USER_TIMES   kusrt;
@@ -1287,7 +585,7 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/thread.c b/dlls/ntd
              SERVER_START_REQ( get_thread_times )
              {
                  req->handle = wine_server_obj_handle( handle );
-@@ -1023,36 +1184,44 @@ NTSTATUS WINAPI NtQueryInformationThread
+@@ -897,36 +1052,44 @@ NTSTATUS WINAPI NtQueryInformationThread
                  {
                      kusrt.CreateTime.QuadPart = reply->creation_time;
                      kusrt.ExitTime.QuadPart = reply->exit_time;
@@ -1349,9 +647,9 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/thread.c b/dlls/ntd
                  if (data) memcpy( data, &kusrt, min( length, sizeof(kusrt) ));
                  if (ret_len) *ret_len = min( length, sizeof(kusrt) );
              }
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/virtual.c b/dlls/ntdll/virtual.c
---- a/dlls/ntdll/virtual.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/ntdll/virtual.c	2018-10-28 11:39:55.725892820 +0200
+diff -purN a/dlls/ntdll/virtual.c b/dlls/ntdll/virtual.c
+--- a/dlls/ntdll/virtual.c	2019-03-21 15:28:26.000000000 +0200
++++ b/dlls/ntdll/virtual.c	2019-03-27 19:02:05.326026534 +0200
 @@ -2009,6 +2009,7 @@ NTSTATUS virtual_handle_fault( LPCVOID a
  {
      NTSTATUS ret = STATUS_ACCESS_VIOLATION;
@@ -1384,9 +682,9 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntdll/virtual.c b/dlls/nt
      return ret;
  }
  
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntoskrnl.exe/instr.c b/dlls/ntoskrnl.exe/instr.c
---- a/dlls/ntoskrnl.exe/instr.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/ntoskrnl.exe/instr.c	2018-10-28 11:39:47.467904756 +0200
+diff -purN a/dlls/ntoskrnl.exe/instr.c b/dlls/ntoskrnl.exe/instr.c
+--- a/dlls/ntoskrnl.exe/instr.c	2019-03-21 15:28:26.000000000 +0200
++++ b/dlls/ntoskrnl.exe/instr.c	2019-03-27 19:01:55.580030862 +0200
 @@ -481,8 +481,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(int);
  #define SIB_INDEX( sib, rex )   (((sib) >> 3) & 7) | (((rex) & REX_X) ? 8 : 0)
  #define SIB_BASE( sib, rex )    (((sib) & 7) | (((rex) & REX_B) ? 8 : 0))
@@ -1426,218 +724,10 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/ntoskrnl.exe/instr.c b/dl
              context->Rip += prefixlen + len + 1;
              return ExceptionContinueExecution;
          }
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/system.drv16/system.c b/dlls/system.drv16/system.c
---- a/dlls/system.drv16/system.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/system.drv16/system.c	2018-10-28 11:42:12.863716648 +0200
-@@ -72,7 +72,7 @@ static void CALLBACK SYSTEM_TimerTick( L
-             context.SegGs = wine_get_gs();
-             context.SegCs = SELECTOROF( proc );
-             context.Eip   = OFFSETOF( proc );
--            context.Ebp   = OFFSETOF(NtCurrentTeb()->WOW32Reserved) + FIELD_OFFSET(STACK16FRAME, bp);
-+            context.Ebp   = OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) + FIELD_OFFSET(STACK16FRAME, bp);
-             context.Eax   = i + 1;
- 
-             WOWCallback16Ex( 0, WCB16_REGS, 0, NULL, (DWORD *)&context );
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/toolhelp.dll16/toolhelp.c b/dlls/toolhelp.dll16/toolhelp.c
---- a/dlls/toolhelp.dll16/toolhelp.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/toolhelp.dll16/toolhelp.c	2018-10-28 11:42:12.863716648 +0200
-@@ -460,8 +460,8 @@ BOOL16 WINAPI TaskNext16( TASKENTRY *lpt
-     lpte->hTaskParent   = pTask->hParent;
-     lpte->hInst         = pTask->hInstance;
-     lpte->hModule       = pTask->hModule;
--    lpte->wSS           = SELECTOROF( pTask->teb->WOW32Reserved );
--    lpte->wSP           = OFFSETOF( pTask->teb->WOW32Reserved );
-+    lpte->wSS           = SELECTOROF( pTask->teb->SystemReserved1[0] );
-+    lpte->wSP           = OFFSETOF( pTask->teb->SystemReserved1[0] );
-     lpte->wStackTop     = pInstData->stacktop;
-     lpte->wStackMinimum = pInstData->stackmin;
-     lpte->wStackBottom  = pInstData->stackbottom;
-@@ -693,7 +693,7 @@ BOOL16 WINAPI TimerCount16( TIMERINFO *p
-  */
- BOOL16 WINAPI SystemHeapInfo16( SYSHEAPINFO *pHeapInfo )
- {
--    STACK16FRAME* stack16 = MapSL((SEGPTR)NtCurrentTeb()->WOW32Reserved);
-+    STACK16FRAME* stack16 = MapSL((SEGPTR)NtCurrentTeb()->SystemReserved1[0]);
-     HANDLE16 oldDS = stack16->ds;
-     WORD user = LoadLibrary16( "USER.EXE" );
-     WORD gdi = LoadLibrary16( "GDI.EXE" );
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/user.exe16/message.c b/dlls/user.exe16/message.c
---- a/dlls/user.exe16/message.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/user.exe16/message.c	2018-10-28 11:42:12.864716647 +0200
-@@ -249,13 +249,13 @@ static LRESULT call_window_proc16( HWND1
-     /* Window procedures want ax = hInstance, ds = es = ss */
- 
-     memset(&context, 0, sizeof(context));
--    context.SegDs = context.SegEs = SELECTOROF(NtCurrentTeb()->WOW32Reserved);
-+    context.SegDs = context.SegEs = SELECTOROF(NtCurrentTeb()->SystemReserved1[0]);
-     context.SegFs = wine_get_fs();
-     context.SegGs = wine_get_gs();
-     if (!(context.Eax = GetWindowWord( HWND_32(hwnd), GWLP_HINSTANCE ))) context.Eax = context.SegDs;
-     context.SegCs = SELECTOROF(func);
-     context.Eip   = OFFSETOF(func);
--    context.Ebp   = OFFSETOF(NtCurrentTeb()->WOW32Reserved) + FIELD_OFFSET(STACK16FRAME, bp);
-+    context.Ebp   = OFFSETOF(NtCurrentTeb()->SystemReserved1[0]) + FIELD_OFFSET(STACK16FRAME, bp);
- 
-     if (lParam)
-     {
-@@ -278,7 +278,7 @@ static LRESULT call_window_proc16( HWND1
-         if (size)
-         {
-             memcpy( &args.u, MapSL(lParam), size );
--            lParam = PtrToUlong(NtCurrentTeb()->WOW32Reserved) - size;
-+            lParam = PtrToUlong(NtCurrentTeb()->SystemReserved1[0]) - size;
-         }
-     }
- 
-@@ -2103,7 +2103,7 @@ static LRESULT combo_proc16( HWND hwnd,
- 
- static void edit_lock_buffer( HWND hwnd )
- {
--    STACK16FRAME* stack16 = MapSL(PtrToUlong(NtCurrentTeb()->WOW32Reserved));
-+    STACK16FRAME* stack16 = MapSL(PtrToUlong(NtCurrentTeb()->SystemReserved1[0]));
-     HLOCAL16 hloc16 = GetWindowWord( hwnd, GWW_HANDLE16 );
-     HANDLE16 oldDS;
-     HLOCAL hloc32;
-@@ -2129,7 +2129,7 @@ static void edit_lock_buffer( HWND hwnd
- 
- static void edit_unlock_buffer( HWND hwnd )
- {
--    STACK16FRAME* stack16 = MapSL(PtrToUlong(NtCurrentTeb()->WOW32Reserved));
-+    STACK16FRAME* stack16 = MapSL(PtrToUlong(NtCurrentTeb()->SystemReserved1[0]));
-     HLOCAL16 hloc16 = GetWindowWord( hwnd, GWW_HANDLE16 );
-     HANDLE16 oldDS;
-     HLOCAL hloc32;
-@@ -2166,7 +2166,7 @@ static HLOCAL16 edit_get_handle( HWND hw
-     if (!(hloc = (HLOCAL)wow_handlers32.edit_proc( hwnd, EM_GETHANDLE, 0, 0, FALSE ))) return 0;
-     alloc_size = LocalSize( hloc );
- 
--    stack16 = MapSL(PtrToUlong(NtCurrentTeb()->WOW32Reserved));
-+    stack16 = MapSL(PtrToUlong(NtCurrentTeb()->SystemReserved1[0]));
-     oldDS = stack16->ds;
-     stack16->ds = GetWindowLongPtrW( hwnd, GWLP_HINSTANCE );
- 
-@@ -2204,7 +2204,7 @@ done:
- 
- static void edit_set_handle( HWND hwnd, HLOCAL16 hloc16 )
- {
--    STACK16FRAME* stack16 = MapSL(PtrToUlong(NtCurrentTeb()->WOW32Reserved));
-+    STACK16FRAME* stack16 = MapSL(PtrToUlong(NtCurrentTeb()->SystemReserved1[0]));
-     HINSTANCE16 hInstance = GetWindowLongPtrW( hwnd, GWLP_HINSTANCE );
-     HANDLE16 oldDS = stack16->ds;
-     HLOCAL hloc32;
-@@ -2234,7 +2234,7 @@ static void edit_destroy_handle( HWND hw
-     HLOCAL16 hloc16 = GetWindowWord( hwnd, GWW_HANDLE16 );
-     if (hloc16)
-     {
--        STACK16FRAME* stack16 = MapSL(PtrToUlong(NtCurrentTeb()->WOW32Reserved));
-+        STACK16FRAME* stack16 = MapSL(PtrToUlong(NtCurrentTeb()->SystemReserved1[0]));
-         HANDLE16 oldDS = stack16->ds;
- 
-         stack16->ds = GetWindowLongPtrW( hwnd, GWLP_HINSTANCE );
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/user.exe16/user.c b/dlls/user.exe16/user.c
---- a/dlls/user.exe16/user.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/user.exe16/user.c	2018-10-28 11:42:12.864716647 +0200
-@@ -1394,7 +1394,7 @@ DWORD WINAPI GetTabbedTextExtent16( HDC1
-  */
- DWORD WINAPI UserSeeUserDo16(WORD wReqType, WORD wParam1, WORD wParam2, WORD wParam3)
- {
--    STACK16FRAME* stack16 = MapSL((SEGPTR)NtCurrentTeb()->WOW32Reserved);
-+    STACK16FRAME* stack16 = MapSL((SEGPTR)NtCurrentTeb()->SystemReserved1[0]);
-     HANDLE16 oldDS = stack16->ds;
-     DWORD ret = (DWORD)-1;
- 
-@@ -1787,7 +1787,7 @@ UINT16 WINAPI RealizePalette16( HDC16 hd
-  */
- WORD WINAPI GetFreeSystemResources16( WORD resType )
- {
--    STACK16FRAME* stack16 = MapSL((SEGPTR)NtCurrentTeb()->WOW32Reserved);
-+    STACK16FRAME* stack16 = MapSL((SEGPTR)NtCurrentTeb()->SystemReserved1[0]);
-     HANDLE16 oldDS = stack16->ds;
-     int userPercent, gdiPercent;
- 
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/dlls/user.exe16/window.c b/dlls/user.exe16/window.c
---- a/dlls/user.exe16/window.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/dlls/user.exe16/window.c	2018-10-28 11:42:12.865716646 +0200
-@@ -455,7 +455,7 @@ HWND16 WINAPI GetParent16( HWND16 hwnd )
-  */
- BOOL16 WINAPI IsWindow16( HWND16 hwnd )
- {
--    STACK16FRAME *frame = MapSL( (SEGPTR)NtCurrentTeb()->WOW32Reserved );
-+    STACK16FRAME *frame = MapSL( (SEGPTR)NtCurrentTeb()->SystemReserved1[0] );
-     frame->es = USER_HeapSel;
-     /* don't use WIN_Handle32 here, we don't care about the full handle */
-     return IsWindow( HWND_32(hwnd) );
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/include/winternl.h b/include/winternl.h
---- a/include/winternl.h	2018-10-17 15:46:43.000000000 +0300
-+++ b/include/winternl.h	2018-10-28 11:42:32.652695847 +0200
-@@ -357,10 +357,10 @@ typedef struct _TEB
-     PVOID                        CsrClientThread;                   /* 03c/0070 */
-     PVOID                        Win32ThreadInfo;                   /* 040/0078 */
-     ULONG                        Win32ClientInfo[31];               /* 044/0080 used for user32 private data in Wine */
--    PVOID                        WOW32Reserved;                     /* 0c0/0100 */
-+    PVOID                        WOW32Reserved;                     /* 0c0/0100 used for ntdll syscall thunks */
-     ULONG                        CurrentLocale;                     /* 0c4/0108 */
-     ULONG                        FpSoftwareStatusRegister;          /* 0c8/010c */
--    PVOID                        SystemReserved1[54];               /* 0cc/0110 used for kernel32 private data in Wine */
-+    PVOID                        SystemReserved1[54];               /* 0cc/0110 used for krnl386.exe16 private data in Wine */
-     LONG                         ExceptionCode;                     /* 1a4/02c0 */
-     ACTIVATION_CONTEXT_STACK     ActivationContextStack;            /* 1a8/02c8 */
-     BYTE                         SpareBytes1[24];                   /* 1bc/02e8 */
-@@ -397,7 +397,7 @@ typedef struct _TEB
-     PVOID                        WinSockData;                       /* f6c/1738 */
-     ULONG                        GdiBatchCount;                     /* f70/1740 */
-     ULONG                        Spare2;                            /* f74/1744 */
--    PVOID                        Spare3;                            /* f78/1748 */
-+    PVOID                        Spare3;                            /* f78/1748 used for fakedll thunks */
-     PVOID                        Spare4;                            /* f7c/1750 */
-     PVOID                        ReservedForOle;                    /* f80/1758 */
-     ULONG                        WaitingOnLoaderLock;               /* f84/1760 */
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/libs/wine/loader.c b/libs/wine/loader.c
---- a/libs/wine/loader.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/libs/wine/loader.c	2018-10-28 11:43:06.493660275 +0200
-@@ -405,8 +405,12 @@ static void *map_dll( const IMAGE_NT_HEA
-     assert( size <= page_size );
- 
-     /* module address must be aligned on 64K boundary */
--    addr = (BYTE *)((nt_descr->OptionalHeader.ImageBase + 0xffff) & ~0xffff);
--    if (wine_anon_mmap( addr, page_size, PROT_READ|PROT_WRITE, MAP_FIXED ) != addr) return NULL;
-+    addr = *(BYTE **)&nt_descr->OptionalHeader.DataDirectory[15];
-+    if (!addr || ((ULONG_PTR)addr & 0xffff) || mprotect( addr, page_size, PROT_READ | PROT_WRITE ))
-+    {
-+        addr = (BYTE *)((nt_descr->OptionalHeader.ImageBase + 0xffff) & ~0xffff);
-+        if (wine_anon_mmap( addr, page_size, PROT_READ|PROT_WRITE, MAP_FIXED ) != addr) return NULL;
-+    }
- 
-     dos    = (IMAGE_DOS_HEADER *)addr;
-     nt     = (IMAGE_NT_HEADERS *)(dos + 1);
-@@ -453,13 +457,22 @@ static void *map_dll( const IMAGE_NT_HEA
-     nt->OptionalHeader.SizeOfImage                 = data_end;
-     nt->OptionalHeader.ImageBase                   = (ULONG_PTR)addr;
- 
-+    /* Clear DataDirectory[15] */
-+
-+    nt->OptionalHeader.DataDirectory[15].VirtualAddress = 0;
-+    nt->OptionalHeader.DataDirectory[15].Size = 0;
-+
-     /* Build the code section */
- 
-     memcpy( sec->Name, ".text", sizeof(".text") );
-     sec->SizeOfRawData = code_end - code_start;
-     sec->Misc.VirtualSize = sec->SizeOfRawData;
-     sec->VirtualAddress   = code_start;
--    sec->PointerToRawData = code_start;
-+#ifdef _WIN64
-+    sec->PointerToRawData = 0x400; /* file alignment */
-+#else
-+    sec->PointerToRawData = 0x200; /* file alignment */
-+#endif
-     sec->Characteristics  = (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ);
-     sec++;
- 
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/server/protocol.def b/server/protocol.def
---- a/server/protocol.def	2018-10-17 15:46:43.000000000 +0300
-+++ b/server/protocol.def	2018-10-28 11:34:32.044634054 +0200
-@@ -903,6 +903,8 @@ struct rawinput_device
+diff -purN a/server/protocol.def b/server/protocol.def
+--- a/server/protocol.def	2019-03-21 15:28:26.000000000 +0200
++++ b/server/protocol.def	2019-03-27 18:52:37.862279812 +0200
+@@ -916,6 +916,8 @@ struct rawinput_device
  @REPLY
      timeout_t    creation_time; /* thread creation time */
      timeout_t    exit_time;     /* thread exit time */
@@ -1646,7 +736,7 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/server/protocol.def b/server/p
  @END
  
  
-@@ -1821,6 +1823,7 @@ enum char_info_mode
+@@ -1834,6 +1836,7 @@ enum char_info_mode
      int          priority;      /* process priority */
      int          handles;       /* number of handles */
      int          unix_pid;      /* Unix pid */
@@ -1654,7 +744,7 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/server/protocol.def b/server/p
      VARARG(filename,unicode_str); /* file name of main exe */
  @END
  
-@@ -1833,8 +1836,10 @@ enum char_info_mode
+@@ -1846,8 +1849,10 @@ enum char_info_mode
      int          count;         /* thread usage count */
      process_id_t pid;           /* process id */
      thread_id_t  tid;           /* thread id */
@@ -1665,9 +755,9 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/server/protocol.def b/server/p
  @END
  
  
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/server/snapshot.c b/server/snapshot.c
---- a/server/snapshot.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/server/snapshot.c	2018-10-28 11:34:32.044634054 +0200
+diff -purN a/server/snapshot.c b/server/snapshot.c
+--- a/server/snapshot.c	2019-03-21 15:28:26.000000000 +0200
++++ b/server/snapshot.c	2019-03-27 18:52:37.862279812 +0200
 @@ -114,13 +114,14 @@ static int snapshot_next_process( struct
          return 0;
      }
@@ -1709,10 +799,10 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/server/snapshot.c b/server/sna
      return 1;
  }
  
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/server/thread.c b/server/thread.c
---- a/server/thread.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/server/thread.c	2018-10-28 11:34:03.525661069 +0200
-@@ -1447,6 +1447,8 @@ DECL_HANDLER(get_thread_times)
+diff -purN a/server/thread.c b/server/thread.c
+--- a/server/thread.c	2019-03-21 15:28:26.000000000 +0200
++++ b/server/thread.c	2019-03-27 18:51:47.074236239 +0200
+@@ -1501,6 +1501,8 @@ DECL_HANDLER(get_thread_times)
      {
          reply->creation_time  = thread->creation_time;
          reply->exit_time      = thread->exit_time;
@@ -1721,10 +811,10 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/server/thread.c b/server/threa
  
          release_object( thread );
      }
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/server/thread.h b/server/thread.h
---- a/server/thread.h	2018-10-17 15:46:43.000000000 +0300
-+++ b/server/thread.h	2018-10-28 11:34:32.045634053 +0200
-@@ -150,5 +150,7 @@ static inline void clear_error(void)
+diff -purN a/server/thread.h b/server/thread.h
+--- a/server/thread.h	2019-03-21 15:28:26.000000000 +0200
++++ b/server/thread.h	2019-03-27 18:52:37.862279812 +0200
+@@ -151,5 +151,7 @@ static inline void clear_error(void)
  static inline void set_win32_error( unsigned int err ) { set_error( 0xc0010000 | err ); }
  
  static inline thread_id_t get_thread_id( struct thread *thread ) { return thread->id; }
@@ -1732,1251 +822,3 @@ diff -purN '--exclude=*.orig' '--exclude=*.rej' a/server/thread.h b/server/threa
 +static inline timeout_t get_thread_creation_time( struct thread *thread ) { return thread->creation_time; }
  
  #endif  /* __WINE_SERVER_THREAD_H */
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/tools/winebuild/build.h b/tools/winebuild/build.h
---- a/tools/winebuild/build.h	2018-10-17 15:46:43.000000000 +0300
-+++ b/tools/winebuild/build.h	2018-10-28 11:42:32.653695846 +0200
-@@ -103,6 +103,7 @@ typedef struct
-     int         flags;
-     char       *name;         /* public name of this function */
-     char       *link_name;    /* name of the C symbol to link to */
-+    char       *impl_name;    /* name of the C symbol of the real implementation (thunks only) */
-     char       *export_name;  /* name exported under for noname exports */
-     union
-     {
-@@ -129,6 +130,7 @@ typedef struct
-     int              alloc_entry_points; /* number of allocated entry points */
-     int              nb_names;           /* number of entry points with names */
-     unsigned int     nb_resources;       /* number of resources */
-+    int              nb_syscalls;        /* number of syscalls */
-     int              characteristics;    /* characteristics for the PE header */
-     int              dll_characteristics;/* DLL characteristics for the PE header */
-     int              subsystem;          /* subsystem id */
-@@ -138,6 +140,7 @@ typedef struct
-     ORDDEF         **names;              /* array of entry point names (points into entry_points) */
-     ORDDEF         **ordinals;           /* array of dll ordinals (points into entry_points) */
-     struct resource *resources;          /* array of dll resources (format differs between Win16/Win32) */
-+    ORDDEF         **syscalls;           /* array of syscalls (points into entry_points) */
- } DLLSPEC;
- 
- enum target_cpu
-@@ -177,6 +180,7 @@ struct strarray
- #define FLAG_FORWARD   0x100  /* function is a forwarded name */
- #define FLAG_EXT_LINK  0x200  /* function links to an external symbol */
- #define FLAG_EXPORT32  0x400  /* 32-bit export in 16-bit spec file */
-+#define FLAG_SYSCALL   0x800  /* function should be called through a syscall thunk */
- 
- #define FLAG_CPU(cpu)  (0x01000 << (cpu))
- #define FLAG_CPU_MASK  (FLAG_CPU(CPU_LAST + 1) - FLAG_CPU(0))
-@@ -313,6 +317,8 @@ extern void add_16bit_exports( DLLSPEC *
- extern int parse_spec_file( FILE *file, DLLSPEC *spec );
- extern int parse_def_file( FILE *file, DLLSPEC *spec );
- 
-+extern int sort_func_list( ORDDEF **list, int count, int (*compare)(const void *, const void *) );
-+
- /* buffer management */
- 
- extern int byte_swapped;
-@@ -322,6 +328,7 @@ extern size_t input_buffer_pos;
- extern size_t input_buffer_size;
- extern unsigned char *output_buffer;
- extern size_t output_buffer_pos;
-+extern size_t output_buffer_rva;
- extern size_t output_buffer_size;
- 
- extern void init_input_buffer( const char *file );
-@@ -336,7 +343,13 @@ extern void put_word( unsigned short val
- extern void put_dword( unsigned int val );
- extern void put_qword( unsigned int val );
- extern void put_pword( unsigned int val );
-+extern void put_str( const char *str );
- extern void align_output( unsigned int align );
-+extern void align_output_rva( unsigned int file_align, unsigned int rva_align );
-+extern size_t label_pos( const char *name );
-+extern size_t label_rva( const char *name );
-+extern size_t label_rva_align( const char *name );
-+extern void put_label( const char *name );
- 
- /* global variables */
- 
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/tools/winebuild/import.c b/tools/winebuild/import.c
---- a/tools/winebuild/import.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/tools/winebuild/import.c	2018-10-28 11:42:19.317709863 +0200
-@@ -451,6 +451,7 @@ static void check_undefined_forwards( DL
- /* flag the dll exports that link to an undefined symbol */
- static void check_undefined_exports( DLLSPEC *spec )
- {
-+    const char *name;
-     int i;
- 
-     for (i = 0; i < spec->nb_entry_points; i++)
-@@ -458,7 +459,8 @@ static void check_undefined_exports( DLL
-         ORDDEF *odp = &spec->entry_points[i];
-         if (odp->type == TYPE_STUB || odp->type == TYPE_ABS || odp->type == TYPE_VARIABLE) continue;
-         if (odp->flags & FLAG_FORWARD) continue;
--        if (find_name( odp->link_name, &undef_symbols ))
-+        name = odp->impl_name ? odp->impl_name : odp->link_name;
-+        if (find_name( name, &undef_symbols ))
-         {
-             switch(odp->type)
-             {
-@@ -470,14 +472,14 @@ static void check_undefined_exports( DLL
-                 if (link_ext_symbols)
-                 {
-                     odp->flags |= FLAG_EXT_LINK;
--                    strarray_add( &ext_link_imports, odp->link_name, NULL );
-+                    strarray_add( &ext_link_imports, name, NULL );
-                 }
-                 else error( "%s:%d: function '%s' not defined\n",
--                            spec->src_name, odp->lineno, odp->link_name );
-+                            spec->src_name, odp->lineno, name );
-                 break;
-             default:
-                 error( "%s:%d: external symbol '%s' is not a function\n",
--                       spec->src_name, odp->lineno, odp->link_name );
-+                       spec->src_name, odp->lineno, name );
-                 break;
-             }
-         }
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/tools/winebuild/parser.c b/tools/winebuild/parser.c
---- a/tools/winebuild/parser.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/tools/winebuild/parser.c	2018-10-28 11:43:06.493660275 +0200
-@@ -519,6 +519,24 @@ static const char *parse_spec_flags( DLL
- }
- 
- 
-+static int needs_syscall( ORDDEF *odp, DLLSPEC *spec )
-+{
-+    if (target_cpu != CPU_x86 && target_cpu != CPU_x86_64)
-+        return 0;
-+    if (odp->flags & (FLAG_FORWARD | FLAG_REGISTER))
-+        return 0;
-+    if (odp->type != TYPE_STDCALL)
-+        return 0;
-+    if (!spec->dll_name || strcmp(spec->dll_name, "ntdll"))
-+        return 0;
-+    if (!odp->name)
-+        return 0;
-+    if (strncmp(odp->name, "Nt", 2) && strncmp(odp->name, "Zw", 2))
-+        return 0;
-+    return 1;
-+}
-+
-+
- /*******************************************************************
-  *         parse_spec_ordinal
-  *
-@@ -587,6 +605,14 @@ static int parse_spec_ordinal( int ordin
-         assert( 0 );
-     }
- 
-+    if (needs_syscall( odp, spec ))
-+    {
-+        char *link_name = strmake( "__syscall_%s", odp->link_name );
-+        odp->impl_name = odp->link_name;
-+        odp->link_name = link_name;
-+        odp->flags |= FLAG_SYSCALL;
-+    }
-+
-     if ((odp->flags & FLAG_CPU_MASK) && !(odp->flags & FLAG_CPU(target_cpu)))
-     {
-         /* ignore this entry point */
-@@ -783,6 +809,37 @@ static void assign_ordinals( DLLSPEC *sp
- }
- 
- 
-+static int link_name_compare( const void *e1, const void *e2 )
-+{
-+    const ORDDEF *odp1 = *(const ORDDEF * const *)e1;
-+    const ORDDEF *odp2 = *(const ORDDEF * const *)e2;
-+    return strcmp(odp1->link_name, odp2->link_name);
-+}
-+
-+
-+static void assign_syscalls( DLLSPEC *spec )
-+{
-+    int i;
-+
-+    spec->syscalls = xmalloc( (spec->limit - spec->base + 1) * sizeof(*spec->syscalls) );
-+    spec->nb_syscalls = 0;
-+
-+    for (i = 0; i <= spec->limit; i++)
-+    {
-+        ORDDEF *odp = spec->ordinals[i];
-+        if (!odp || !(odp->flags & FLAG_SYSCALL)) continue;
-+        spec->syscalls[spec->nb_syscalls++] = odp;
-+    }
-+
-+    spec->nb_syscalls = sort_func_list( spec->syscalls, spec->nb_syscalls, link_name_compare );
-+    if (!spec->nb_syscalls)
-+    {
-+        free( spec->syscalls );
-+        spec->syscalls = NULL;
-+    }
-+}
-+
-+
- /*******************************************************************
-  *         add_16bit_exports
-  *
-@@ -884,6 +941,8 @@ int parse_spec_file( FILE *file, DLLSPEC
-     current_line = 0;  /* no longer parsing the input file */
-     assign_names( spec );
-     assign_ordinals( spec );
-+    assign_syscalls( spec );
-+
-     return !nb_errors;
- }
- 
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/tools/winebuild/relay.c b/tools/winebuild/relay.c
---- a/tools/winebuild/relay.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/tools/winebuild/relay.c	2018-10-28 11:42:12.866716645 +0200
-@@ -31,7 +31,7 @@
- #include "build.h"
- 
- /* offset of the stack pointer relative to %fs:(0) */
--#define STACKOFFSET 0xc0  /* FIELD_OFFSET(TEB,WOW32Reserved) */
-+#define STACKOFFSET 0xcc  /* FIELD_OFFSET(TEB,SystemReserved1[0]) */
- 
- /* fix this if the x86_thread_data structure is changed */
- #define GS_OFFSET  0x1d8  /* FIELD_OFFSET(TEB,SystemReserved2) + FIELD_OFFSET(struct x86_thread_data,gs) */
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/tools/winebuild/res32.c b/tools/winebuild/res32.c
---- a/tools/winebuild/res32.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/tools/winebuild/res32.c	2018-10-28 11:42:25.970702871 +0200
-@@ -534,7 +534,6 @@ void output_bin_resources( DLLSPEC *spec
-     if (!spec->nb_resources) return;
- 
-     tree = build_resource_tree( spec, &data_offset );
--    init_output_buffer();
- 
-     /* output the resource directories */
- 
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/tools/winebuild/spec16.c b/tools/winebuild/spec16.c
---- a/tools/winebuild/spec16.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/tools/winebuild/spec16.c	2018-10-28 11:42:19.318709862 +0200
-@@ -494,27 +494,6 @@ static int relay_type_compare( const voi
- 
- 
- /*******************************************************************
-- *         sort_func_list
-- *
-- * Sort a list of functions, removing duplicates.
-- */
--static int sort_func_list( ORDDEF **list, int count,
--                           int (*compare)(const void *, const void *) )
--{
--    int i, j;
--
--    if (!count) return 0;
--    qsort( list, count, sizeof(*list), compare );
--
--    for (i = j = 0; i < count; i++)
--    {
--        if (compare( &list[j], &list[i] )) list[++j] = list[i];
--    }
--    return j + 1;
--}
--
--
--/*******************************************************************
-  *         output_module16
-  *
-  * Output code for a 16-bit module.
-@@ -542,6 +521,7 @@ static void output_module16( DLLSPEC *sp
-         entry_point->flags = FLAG_REGISTER;
-         entry_point->name = NULL;
-         entry_point->link_name = xstrdup( spec->init_func );
-+        entry_point->impl_name = NULL;
-         entry_point->export_name = NULL;
-         entry_point->u.func.nb_args = 0;
-         assert( !spec->ordinals[0] );
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/tools/winebuild/spec32.c b/tools/winebuild/spec32.c
---- a/tools/winebuild/spec32.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/tools/winebuild/spec32.c	2018-10-28 11:43:06.494660274 +0200
-@@ -342,6 +342,193 @@ static void output_relay_debug( DLLSPEC
- }
- 
- /*******************************************************************
-+ *         output_syscall_thunks_x86
-+ *
-+ * Output entry points for system call functions
-+ */
-+static void output_syscall_thunks_x86( DLLSPEC *spec )
-+{
-+    const unsigned int page_size = get_page_size();
-+    int i;
-+
-+    if (!spec->nb_syscalls)
-+        return;
-+
-+    /* Reserve space for PE header directly before syscalls. */
-+    if (target_platform == PLATFORM_APPLE)
-+        output( "\t.text\n" );
-+    else
-+        output( "\n\t.section \".text.startup\"\n" );
-+
-+    output( "\t.align %d\n", get_alignment(65536) );
-+    output( "__wine_spec_pe_header_syscalls:\n" );
-+    output( "\t.byte 0\n" );
-+    output( "\t.balign %d, 0\n", page_size );
-+
-+    output( "\n/* syscall thunks */\n\n" );
-+    for (i = 0; i < spec->nb_syscalls; i++)
-+    {
-+        ORDDEF *odp = spec->syscalls[i];
-+        const char *name = odp->link_name;
-+
-+        output( "\t.balign 16, 0\n" );
-+        output( "\t%s\n", func_declaration(name) );
-+        output( "%s\n", asm_globl(name) );
-+        output_cfi( ".cfi_startproc" );
-+        output( "\t.byte 0xb8\n" );                               /* mov eax, SYSCALL */
-+        output( "\t.long %d\n", i );
-+        output( "\t.byte 0x33,0xc9\n" );                          /* xor ecx, ecx */
-+        output( "\t.byte 0x8d,0x54,0x24,0x04\n" );                /* lea edx, [esp + 4] */
-+        output( "\t.byte 0x64,0xff,0x15,0xc0,0x00,0x00,0x00\n" ); /* call dword ptr fs:[0C0h] */
-+        output( "\t.byte 0x83,0xc4,0x04\n" );                     /* add esp, 4 */
-+        output( "\t.byte 0xc2\n" );                               /* ret X */
-+        output( "\t.short %d\n", get_args_size(odp) );
-+        output_cfi( ".cfi_endproc" );
-+        output_function_size( name );
-+    }
-+
-+    for (i = 0; i < 0x20; i++)
-+        output( "\t.byte 0\n" );
-+
-+    output( "\n/* syscall table */\n\n" );
-+    output( "\t.data\n" );
-+    output( "%s\n", asm_globl("__wine_syscall_table") );
-+    for (i = 0; i < spec->nb_syscalls; i++)
-+    {
-+        ORDDEF *odp = spec->syscalls[i];
-+        output ("\t%s %s\n", get_asm_ptr_keyword(), asm_name(odp->impl_name) );
-+    }
-+
-+    output( "\n/* syscall argument stack size table */\n\n" );
-+    output( "\t.data\n" );
-+    output( "%s\n", asm_globl("__wine_syscall_stack_size") );
-+    for (i = 0; i < spec->nb_syscalls; i++)
-+    {
-+        ORDDEF *odp = spec->syscalls[i];
-+        output( "\t.byte %d\n", get_args_size(odp) );
-+    }
-+
-+    output( "\n/* syscall dispatcher */\n\n" );
-+    output( "\t.text\n" );
-+    output( "\t.align %d\n", get_alignment(16) );
-+    output( "\t%s\n", func_declaration("__wine_syscall_dispatcher") );
-+    output( "%s\n", asm_globl("__wine_syscall_dispatcher") );
-+    output_cfi( ".cfi_startproc" );
-+    output( "\tpushl %%ebp\n" );
-+    output( "\tmovl %%esp,%%ebp\n" );
-+    output( "\tpushl %%esi\n" );
-+    output( "\tpushl %%edi\n" );
-+    output( "\tmovl %%edx,%%esi\n" );
-+    if (UsePIC)
-+    {
-+        output( "\tcall 1f\n" );
-+        output( "1:\tpopl %%edx\n" );
-+        output( "movzbl (%s-1b)(%%edx,%%eax,1),%%ecx\n", asm_name("__wine_syscall_stack_size") );
-+    }
-+    else
-+        output( "movzbl %s(%%eax),%%ecx\n", asm_name("__wine_syscall_stack_size") );
-+
-+    output( "\tsubl %%ecx,%%esp\n" );
-+    output( "\tmovl %%esp,%%edi\n" );
-+    output( "\tshrl $2,%%ecx\n" );
-+    output( "\trep; movsl\n" );
-+    if (UsePIC)
-+        output( "\tcall *(%s-1b)(%%edx,%%eax,%d)\n", asm_name("__wine_syscall_table"), get_ptr_size() );
-+    else
-+        output( "\tcall *%s(,%%eax,%d)\n", asm_name("__wine_syscall_table"), get_ptr_size() );
-+    output( "\tpop %%edi\n" );
-+    output( "\tpop %%esi\n" );
-+    output( "\tleave\n" );
-+    output( "\tjmp *(%%esp)\n" );
-+    output_cfi( ".cfi_endproc" );
-+    output_function_size( "__wine_syscall_dispatcher" );
-+}
-+
-+/*******************************************************************
-+ *         output_syscall_thunks_x64
-+ *
-+ * Output entry points for system call functions
-+ */
-+static void output_syscall_thunks_x64( DLLSPEC *spec )
-+{
-+    const unsigned int page_size = get_page_size();
-+    int i;
-+
-+    if (!spec->nb_syscalls)
-+        return;
-+
-+    /* Reserve space for PE header directly before syscalls. */
-+    if (target_platform == PLATFORM_APPLE)
-+        output( "\t.text\n" );
-+    else
-+        output( "\n\t.section \".text.startup\"\n" );
-+
-+    output( "\t.align %d\n", get_alignment(65536) );
-+    output( "__wine_spec_pe_header_syscalls:\n" );
-+    output( "\t.byte 0\n" );
-+    output( "\t.balign %d, 0\n", page_size );
-+
-+    output( "\n/* syscall thunks */\n\n" );
-+    for (i = 0; i < spec->nb_syscalls; i++)
-+    {
-+        ORDDEF *odp = spec->syscalls[i];
-+        const char *name = odp->link_name;
-+
-+        output( "\t.balign 16, 0\n" );
-+        output( "\t%s\n", func_declaration(name) );
-+        output( "%s\n", asm_globl(name) );
-+        output_cfi( ".cfi_startproc" );
-+        output( "\t.byte 0xb8\n" );                                         /* mov eax, SYSCALL */
-+        output( "\t.long %d\n", i );
-+        if (target_platform == PLATFORM_APPLE)
-+        {
-+            output( "\t.byte 0xff,0x14,0x25\n" );                           /* call [0x7ffe1000] */
-+            output( "\t.long 0x7ffe1000\n" );
-+        }
-+        else
-+        {
-+            output( "\t.byte 0x65,0xff,0x14,0x25\n" );                      /* call qword ptr gs:[0x100] */
-+            output( "\t.long 0x100\n");
-+        }
-+        output( "\t.byte 0xc3\n" );                                        /* ret */
-+        output_cfi( ".cfi_endproc" );
-+        output_function_size( name );
-+    }
-+
-+    for (i = 0; i < 0x20; i++)
-+        output( "\t.byte 0\n" );
-+
-+    output( "\n/* syscall table */\n\n" );
-+    output( "\t.data\n" );
-+    output( "%s\n", asm_globl("__wine_syscall_table") );
-+    for (i = 0; i < spec->nb_syscalls; i++)
-+    {
-+        ORDDEF *odp = spec->syscalls[i];
-+        output ("\t%s %s\n", get_asm_ptr_keyword(), asm_name(odp->impl_name) );
-+    }
-+
-+    output( "\n/* syscall dispatcher */\n\n" );
-+    output( "\t.text\n" );
-+    output( "\t.align %d\n", get_alignment(16) );
-+    output( "\t%s\n", func_declaration("__wine_syscall_dispatcher") );
-+    output( "%s\n", asm_globl("__wine_syscall_dispatcher") );
-+    output_cfi( ".cfi_startproc" );
-+    output( "\tadd $8, %%rsp\n" );
-+    output_cfi( ".cfi_adjust_cfa_offset -8" );
-+    output( "\tmovq $0xffffffff, %%r10\n" );
-+    output( "\tandq %%r10, %%rax\n" );
-+    if (UsePIC)
-+    {
-+        output( "\tleaq (%%rip), %%r10\n" );
-+        output( "1:\tjmpq *(%s-1b)(%%r10,%%rax,%d)\n", asm_name("__wine_syscall_table"), get_ptr_size() );
-+    }
-+    else output( "\tjmpq *%s(,%%rax,%d)\n", asm_name("__wine_syscall_table"), get_ptr_size() );
-+    output( "\tret\n" );
-+    output_cfi( ".cfi_endproc" );
-+    output_function_size( "__wine_syscall_dispatcher" );
-+}
-+
-+/*******************************************************************
-  *         output_exports
-  *
-  * Output the export table for a Win32 module.
-@@ -667,7 +854,14 @@ void output_module( DLLSPEC *spec )
-     output( "\t.long 0,0\n" );  /* DataDirectory[12] */
-     output( "\t.long 0,0\n" );  /* DataDirectory[13] */
-     output( "\t.long 0,0\n" );  /* DataDirectory[14] */
--    output( "\t.long 0,0\n" );  /* DataDirectory[15] */
-+
-+    if (spec->nb_syscalls)   /* DataDirectory[15] */
-+    {
-+        output( "\t%s __wine_spec_pe_header_syscalls\n", get_asm_ptr_keyword() );
-+        if (get_ptr_size() == 4) output( "\t.long 0\n" );
-+    }
-+    else
-+        output( "\t.long 0,0\n" );
- 
-     output( "\n\t%s\n", get_asm_string_section() );
-     output( "%s\n", asm_globl("__wine_spec_file_name") );
-@@ -691,6 +885,10 @@ void BuildSpec32File( DLLSPEC *spec )
-     resolve_imports( spec );
-     output_standard_file_header();
-     output_module( spec );
-+    if (target_cpu == CPU_x86)
-+        output_syscall_thunks_x86( spec );
-+    else if (target_cpu == CPU_x86_64)
-+        output_syscall_thunks_x64( spec );
-     output_stubs( spec );
-     output_exports( spec );
-     output_imports( spec );
-@@ -700,12 +898,303 @@ void BuildSpec32File( DLLSPEC *spec )
- }
- 
- 
-+static int needs_stub_exports( DLLSPEC *spec )
-+{
-+    if (target_cpu != CPU_x86 && target_cpu != CPU_x86_64)
-+        return 0;
-+    if (!(spec->characteristics & IMAGE_FILE_DLL))
-+        return 0;
-+    if (!spec->nb_entry_points)
-+        return 0;
-+    return 1;
-+}
-+
-+
-+static void create_stub_exports_text_x86( DLLSPEC *spec )
-+{
-+    int i, nr_exports = spec->base <= spec->limit ? spec->limit - spec->base + 1 : 0;
-+    size_t rva, thunk;
-+
-+    /* output syscalls */
-+    for (i = 0; i < spec->nb_syscalls; i++)
-+    {
-+        ORDDEF *odp = spec->syscalls[i];
-+
-+        align_output_rva( 16, 16 );
-+        put_label( odp->link_name );
-+        put_byte( 0xb8 ); put_dword( i );                     /* mov eax, SYSCALL */
-+        put_byte( 0x33 ); put_byte( 0xc9 );                   /* xor ecx, ecx */
-+        put_byte( 0x8d ); put_byte( 0x54 );                   /* lea edx, [esp + 4] */
-+        put_byte( 0x24 ); put_byte( 0x04 );
-+        put_byte( 0x64 ); put_byte( 0xff );                   /* call dword ptr fs:[0C0h] */
-+        put_byte( 0x15 ); put_dword( 0xc0 );
-+        put_byte( 0x83 ); put_byte( 0xc4 ); put_byte( 0x04 ); /* add esp, 4 */
-+        put_byte( 0xc2 ); put_word( get_args_size(odp) );     /* ret X */
-+    }
-+
-+    if (spec->nb_syscalls)
-+    {
-+        for (i = 0; i < 0x20; i++)
-+            put_byte( 0 );
-+    }
-+
-+    /* output stub code for exports */
-+    for (i = 0; i < spec->nb_entry_points; i++)
-+    {
-+        ORDDEF *odp = &spec->entry_points[i];
-+        const char *name;
-+
-+        if (odp->flags & FLAG_SYSCALL)
-+            continue;
-+
-+        align_output_rva( 16, 16 );
-+        name = get_stub_name( odp, spec );
-+        put_label( name );
-+        put_byte( 0x8b ); put_byte( 0xff );                           /* mov edi, edi */
-+        put_byte( 0x55 );                                             /* push ebp */
-+        put_byte( 0x8b ); put_byte( 0xec );                           /* mov ebp, esp */
-+        put_byte( 0x68 ); put_dword( 0 );                             /* push dword 0 */
-+        put_byte( 0x68 ); put_dword( odp->ordinal );                  /* push ORDINAL */
-+        rva = output_buffer_rva + 5;
-+        put_byte( 0xe8 ); put_dword( label_rva("_forward") - rva );   /* call _forward */
-+        put_byte( 0x89 ); put_byte( 0xec );                           /* mov esp, ebp */
-+        put_byte( 0x5d );                                             /* pop ebp */
-+        if (odp->type == TYPE_STDCALL || odp->type == TYPE_THISCALL)
-+        {
-+            put_byte( 0xc2 ); put_word( get_args_size(odp) );         /* ret X */
-+        }
-+        else
-+        {
-+            put_byte( 0xc3 );                                         /* ret */
-+        }
-+    }
-+
-+    /* output entry point */
-+    align_output_rva( 16, 16 );
-+    put_label( "entrypoint" );
-+    put_byte( 0xb8 ); put_dword( 1 );                                 /* mov eax, 1 */
-+    put_byte( 0xc2 ); put_word( 12 );                                 /* ret 12 */
-+
-+    /* output forward function */
-+    align_output_rva( 16, 16 );
-+    put_label( "_forward" );
-+    put_byte( 0x8b ); put_byte( 0x6d ); put_byte( 0x00 );             /* mov ebp, dword[ebp] */
-+    put_byte( 0x89 ); put_byte( 0x44 );                               /* mov dword[esp+8], eax */
-+    put_byte( 0x24 ); put_byte( 0x08 );
-+    put_byte( 0x89 ); put_byte( 0x14 ); put_byte( 0x24 );             /* mov dword[esp], edx */
-+    put_byte( 0x8b ); put_byte( 0x54 );                               /* mov edx, dword[esp+4] */
-+    put_byte( 0x24 ); put_byte( 0x04 );
-+    put_byte( 0x89 ); put_byte( 0x4c );                               /* mov dword[esp+4], ecx */
-+    put_byte( 0x24 ); put_byte( 0x04 );
-+    put_byte( 0xe8 ); put_dword( 0 );                                 /* call 1f */
-+    thunk = output_buffer_rva;
-+    put_byte( 0x59 );                                                 /* pop ecx */
-+    put_byte( 0x8b ); put_byte( 0x84 ); put_byte( 0x91 );             /* mov eax, dword[_functions + 4 * (edx - BASE)] */
-+    put_dword( label_rva("_functions") - thunk - 4 * spec->base );
-+    put_byte( 0x09 ); put_byte( 0xc0 );                               /* or eax, eax */
-+    rva = output_buffer_rva + 2;
-+    put_byte( 0x74 ); put_byte( label_rva("_forward_load") - rva );   /* je _forward_load */
-+
-+    put_label( "_forward_done" );
-+    put_byte( 0x89 ); put_byte( 0x44 );                               /* mov dword[esp+12], eax */
-+    put_byte( 0x24 ); put_byte( 0x0c );
-+    put_byte( 0x5a );                                                 /* pop edx */
-+    put_byte( 0x59 );                                                 /* pop ecx */
-+    put_byte( 0x58 );                                                 /* pop eax */
-+    put_byte( 0xc3 );                                                 /* ret */
-+
-+    align_output_rva( 16, 16 );
-+    put_label( "_forward_load" );
-+    put_byte( 0x8d ); put_byte( 0x84 ); put_byte( 0x91 );             /* lea eax, [_functions + 4 * (edx - BASE)] */
-+    put_dword( label_rva("_functions") - thunk - 4 * spec->base );
-+    put_byte( 0x50 );                                                 /* push eax */
-+    put_byte( 0x52 );                                                 /* push edx */
-+    put_byte( 0x8d ); put_byte( 0x81 );                               /* lea eax, [dll_name] */
-+    put_dword( label_rva("dll_name") - thunk );
-+    put_byte( 0x50 );                                                 /* push eax */
-+    put_byte( 0x64 ); put_byte( 0xff );                               /* call dword ptr fs:[0F78h] */
-+    put_byte( 0x15 ); put_dword( 0xf78 );
-+    put_byte( 0x5a );                                                 /* pop edx */
-+    put_byte( 0x89 ); put_byte( 0x02 );                               /* mov dword[edx], eax */
-+    rva = output_buffer_rva + 2;
-+    put_byte( 0xeb ); put_byte( label_rva("_forward_done") - rva );   /* jmp _forward_done */
-+
-+    /* export directory */
-+    align_output_rva( 16, 16 );
-+    put_label( "export_start" );
-+    put_dword( 0 );                             /* Characteristics */
-+    put_dword( 0 );                             /* TimeDateStamp */
-+    put_dword( 0 );                             /* MajorVersion/MinorVersion */
-+    put_dword( label_rva("dll_name") );         /* Name */
-+    put_dword( spec->base );                    /* Base */
-+    put_dword( nr_exports );                    /* NumberOfFunctions */
-+    put_dword( spec->nb_names );                /* NumberOfNames */
-+    put_dword( label_rva("export_funcs") );     /* AddressOfFunctions */
-+    put_dword( label_rva("export_names") );     /* AddressOfNames */
-+    put_dword( label_rva("export_ordinals") );  /* AddressOfNameOrdinals */
-+
-+    put_label( "export_funcs" );
-+    for (i = spec->base; i <= spec->limit; i++)
-+    {
-+        ORDDEF *odp = spec->ordinals[i];
-+        if (odp)
-+        {
-+            const char *name = (odp->flags & FLAG_SYSCALL) ? odp->link_name : get_stub_name( odp, spec );
-+            put_dword( label_rva( name ) );
-+        }
-+        else
-+            put_dword( 0 );
-+    }
-+
-+    if (spec->nb_names)
-+    {
-+        put_label( "export_names" );
-+        for (i = 0; i < spec->nb_names; i++)
-+            put_dword( label_rva(strmake("str_%s", get_stub_name(spec->names[i], spec))) );
-+
-+        put_label( "export_ordinals" );
-+        for (i = 0; i < spec->nb_names; i++)
-+            put_word( spec->names[i]->ordinal - spec->base );
-+        if (spec->nb_names % 2)
-+            put_word( 0 );
-+    }
-+
-+    put_label( "dll_name" );
-+    put_str( spec->file_name );
-+
-+    for (i = 0; i < spec->nb_names; i++)
-+    {
-+        put_label( strmake("str_%s", get_stub_name(spec->names[i], spec)) );
-+        put_str( spec->names[i]->name );
-+    }
-+
-+    put_label( "export_end" );
-+}
-+
-+
-+static void create_stub_exports_text_x64( DLLSPEC *spec )
-+{
-+    int i, nr_exports = spec->base <= spec->limit ? spec->limit - spec->base + 1 : 0;
-+
-+    /* output syscalls */
-+    for (i = 0; i < spec->nb_syscalls; i++)
-+    {
-+        ORDDEF *odp = spec->syscalls[i];
-+
-+        align_output_rva( 16, 16 );
-+        put_label( odp->link_name );
-+        put_byte( 0xb8 ); put_dword( i );                      /* mov eax, SYSCALL */
-+        if (target_platform == PLATFORM_APPLE)
-+        {
-+            put_byte( 0xff ); put_byte( 0x14 );                /* call [0x7ffe1000] */
-+            put_byte( 0x25 ); put_dword( 0x7ffe1000 );
-+        }
-+        else
-+        {
-+            put_byte( 0x65 ); put_byte( 0xff );                /* call ptr gs:[0x100] */
-+            put_byte( 0x14 ); put_byte( 0x25 ); put_dword( 0x100 );
-+
-+        }
-+        put_byte( 0xc3 );                                      /* ret */
-+    }
-+
-+    if (spec->nb_syscalls)
-+    {
-+        for (i = 0; i < 0x20; i++)
-+            put_byte( 0 );
-+    }
-+
-+    /* output stub code for exports */
-+    for (i = 0; i < spec->nb_entry_points; i++)
-+    {
-+        ORDDEF *odp = &spec->entry_points[i];
-+        const char *name;
-+
-+        if (odp->flags & FLAG_SYSCALL)
-+            continue;
-+
-+        align_output_rva( 16, 16 );
-+        name = get_stub_name( odp, spec );
-+        put_label( name );
-+        put_byte( 0xcc );                                             /* int $0x3 */
-+        put_byte( 0xc3 );                                             /* ret */
-+    }
-+
-+    /* output entry point */
-+    align_output_rva( 16, 16 );
-+    put_label( "entrypoint" );
-+    put_byte( 0xb8 ); put_dword( 1 );                                 /* mov rax, 1 */
-+    put_byte( 0xc3 );                                                 /* ret */
-+
-+    /* export directory */
-+    align_output_rva( 16, 16 );
-+    put_label( "export_start" );
-+    put_dword( 0 );                             /* Characteristics */
-+    put_dword( 0 );                             /* TimeDateStamp */
-+    put_dword( 0 );                             /* MajorVersion/MinorVersion */
-+    put_dword( label_rva("dll_name") );         /* Name */
-+    put_dword( spec->base );                    /* Base */
-+    put_dword( nr_exports );                    /* NumberOfFunctions */
-+    put_dword( spec->nb_names );                /* NumberOfNames */
-+    put_dword( label_rva("export_funcs") );     /* AddressOfFunctions */
-+    put_dword( label_rva("export_names") );     /* AddressOfNames */
-+    put_dword( label_rva("export_ordinals") );  /* AddressOfNameOrdinals */
-+
-+    put_label( "export_funcs" );
-+    for (i = spec->base; i <= spec->limit; i++)
-+    {
-+        ORDDEF *odp = spec->ordinals[i];
-+        if (odp)
-+        {
-+            const char *name = (odp->flags & FLAG_SYSCALL) ? odp->link_name : get_stub_name( odp, spec );
-+            put_dword( label_rva( name ) );
-+        }
-+        else
-+            put_dword( 0 );
-+    }
-+
-+    if (spec->nb_names)
-+    {
-+        put_label( "export_names" );
-+        for (i = 0; i < spec->nb_names; i++)
-+            put_dword( label_rva(strmake("str_%s", get_stub_name(spec->names[i], spec))) );
-+
-+        put_label( "export_ordinals" );
-+        for (i = 0; i < spec->nb_names; i++)
-+            put_word( spec->names[i]->ordinal - spec->base );
-+        if (spec->nb_names % 2)
-+            put_word( 0 );
-+    }
-+
-+    put_label( "dll_name" );
-+    put_str( spec->file_name );
-+
-+    for (i = 0; i < spec->nb_names; i++)
-+    {
-+        put_label( strmake("str_%s", get_stub_name(spec->names[i], spec)) );
-+        put_str( spec->names[i]->name );
-+    }
-+
-+    put_label( "export_end" );
-+}
-+
-+
-+static void create_stub_exports_data( DLLSPEC *spec )
-+{
-+    int i;
-+
-+    put_label( "_functions" );
-+    for (i = spec->base; i <= spec->limit; i++)
-+        put_dword( 0 );
-+}
-+
-+
- /*******************************************************************
-- *         output_fake_module
-+ *         output_fake_module_pass
-  *
-- * Build a fake binary module from a spec file.
-+ * Helper to create a fake binary module from a spec file.
-  */
--void output_fake_module( DLLSPEC *spec )
-+static void output_fake_module_pass( DLLSPEC *spec )
- {
-     static const unsigned char dll_code_section[] = { 0x31, 0xc0,          /* xor %eax,%eax */
-                                                       0xc2, 0x0c, 0x00 };  /* ret $12 */
-@@ -717,22 +1206,8 @@ void output_fake_module( DLLSPEC *spec )
-     const unsigned int page_size = get_page_size();
-     const unsigned int section_align = page_size;
-     const unsigned int file_align = 0x200;
--    const unsigned int reloc_size = 8;
-     const unsigned int lfanew = (0x40 + sizeof(fakedll_signature) + 15) & ~15;
--    const unsigned int nb_sections = 2 + (spec->nb_resources != 0);
--    const unsigned int text_size = (spec->characteristics & IMAGE_FILE_DLL) ?
--                                    sizeof(dll_code_section) : sizeof(exe_code_section);
--    unsigned char *resources;
--    unsigned int resources_size;
--    unsigned int image_size = 3 * section_align;
--
--    resolve_imports( spec );
--    output_bin_resources( spec, 3 * section_align );
--    resources = output_buffer;
--    resources_size = output_buffer_pos;
--    if (resources_size) image_size += (resources_size + section_align - 1) & ~(section_align - 1);
--
--    init_output_buffer();
-+    const unsigned int nb_sections = 2 + (needs_stub_exports( spec ) != 0) + (spec->nb_resources != 0);
- 
-     put_word( 0x5a4d );       /* e_magic */
-     put_word( 0x40 );         /* e_cblp */
-@@ -760,7 +1235,7 @@ void output_fake_module( DLLSPEC *spec )
-     put_dword( lfanew );
- 
-     put_data( fakedll_signature, sizeof(fakedll_signature) );
--    align_output( 16 );
-+    align_output_rva( 16, 16 );
- 
-     put_dword( 0x4550 );                             /* Signature */
-     switch(target_cpu)
-@@ -784,12 +1259,12 @@ void output_fake_module( DLLSPEC *spec )
-               IMAGE_NT_OPTIONAL_HDR32_MAGIC );       /* Magic */
-     put_byte(  7 );                                  /* MajorLinkerVersion */
-     put_byte(  10 );                                 /* MinorLinkerVersion */
--    put_dword( text_size );                          /* SizeOfCode */
-+    put_dword( label_pos("text_end") - label_pos("text_start") ); /* SizeOfCode */
-     put_dword( 0 );                                  /* SizeOfInitializedData */
-     put_dword( 0 );                                  /* SizeOfUninitializedData */
--    put_dword( section_align );                      /* AddressOfEntryPoint */
--    put_dword( section_align );                      /* BaseOfCode */
--    if (get_ptr_size() == 4) put_dword( 0 );         /* BaseOfData */
-+    put_dword( label_rva("entrypoint") );            /* AddressOfEntryPoint */
-+    put_dword( label_rva("text_start") );            /* BaseOfCode */
-+    if (get_ptr_size() == 4) put_dword( label_rva("data_start") ); /* BaseOfData */
-     put_pword( 0x10000000 );                         /* ImageBase */
-     put_dword( section_align );                      /* SectionAlignment */
-     put_dword( file_align );                         /* FileAlignment */
-@@ -800,8 +1275,8 @@ void output_fake_module( DLLSPEC *spec )
-     put_word( spec->subsystem_major );               /* MajorSubsystemVersion */
-     put_word( spec->subsystem_minor );               /* MinorSubsystemVersion */
-     put_dword( 0 );                                  /* Win32VersionValue */
--    put_dword( image_size );                         /* SizeOfImage */
--    put_dword( file_align );                         /* SizeOfHeaders */
-+    put_dword( label_rva_align("file_end") );        /* SizeOfImage */
-+    put_dword( label_pos("header_end") );            /* SizeOfHeaders */
-     put_dword( 0 );                                  /* CheckSum */
-     put_word( spec->subsystem );                     /* Subsystem */
-     put_word( spec->dll_characteristics );           /* DllCharacteristics */
-@@ -812,12 +1287,13 @@ void output_fake_module( DLLSPEC *spec )
-     put_dword( 0 );                                  /* LoaderFlags */
-     put_dword( 16 );                                 /* NumberOfRvaAndSizes */
- 
--    put_dword( 0 ); put_dword( 0 );   /* DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT] */
-+    put_dword( label_rva("export_start") ); /* DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT] */
-+    put_dword( label_pos("export_end") - label_pos("export_start") );
-     put_dword( 0 ); put_dword( 0 );   /* DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT] */
--    if (resources_size)   /* DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE] */
-+    if (spec->nb_resources)           /* DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE] */
-     {
--        put_dword( 3 * section_align );
--        put_dword( resources_size );
-+        put_dword( label_rva("res_start") );
-+        put_dword( label_pos("res_end") - label_pos("res_start") );
-     }
-     else
-     {
-@@ -827,8 +1303,8 @@ void output_fake_module( DLLSPEC *spec )
- 
-     put_dword( 0 ); put_dword( 0 );   /* DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION] */
-     put_dword( 0 ); put_dword( 0 );   /* DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY] */
--    put_dword( 2 * section_align );   /* DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC] */
--    put_dword( reloc_size );
-+    put_dword( label_rva("reloc_start") ); /* DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC] */
-+    put_dword( label_pos("reloc_end") - label_pos("reloc_start") );
-     put_dword( 0 ); put_dword( 0 );   /* DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG] */
-     put_dword( 0 ); put_dword( 0 );   /* DataDirectory[IMAGE_DIRECTORY_ENTRY_COPYRIGHT] */
-     put_dword( 0 ); put_dword( 0 );   /* DataDirectory[IMAGE_DIRECTORY_ENTRY_GLOBALPTR] */
-@@ -841,62 +1317,131 @@ void output_fake_module( DLLSPEC *spec )
-     put_dword( 0 ); put_dword( 0 );   /* DataDirectory[15] */
- 
-     /* .text section */
--    put_data( ".text\0\0", 8 );    /* Name */
--    put_dword( section_align );    /* VirtualSize */
--    put_dword( section_align );    /* VirtualAddress */
--    put_dword( text_size );        /* SizeOfRawData */
--    put_dword( file_align );       /* PointerToRawData */
--    put_dword( 0 );                /* PointerToRelocations */
--    put_dword( 0 );                /* PointerToLinenumbers */
--    put_word( 0 );                 /* NumberOfRelocations */
--    put_word( 0 );                 /* NumberOfLinenumbers */
--    put_dword( 0x60000020 /* CNT_CODE|MEM_EXECUTE|MEM_READ */ ); /* Characteristics  */
-+    put_data( ".text\0\0", 8 );                                           /* Name */
-+    put_dword( label_rva_align("text_end") - label_rva("text_start") );   /* VirtualSize */
-+    put_dword( label_rva("text_start") );                                 /* VirtualAddress */
-+    put_dword( label_pos("text_end") - label_pos("text_start") );         /* SizeOfRawData */
-+    put_dword( label_pos("text_start") );                                 /* PointerToRawData */
-+    put_dword( 0 );                                                       /* PointerToRelocations */
-+    put_dword( 0 );                                                       /* PointerToLinenumbers */
-+    put_word( 0 );                                                        /* NumberOfRelocations */
-+    put_word( 0 );                                                        /* NumberOfLinenumbers */
-+    put_dword( 0x60000020 /* CNT_CODE|MEM_EXECUTE|MEM_READ */ );          /* Characteristics  */
-+
-+    /* .data section */
-+    if (needs_stub_exports( spec ))
-+    {
-+        put_data( ".data\0\0", 8 );                                       /* Name */
-+        put_dword( label_rva_align("data_end") - label_rva("data_start") ); /* VirtualSize */
-+        put_dword( label_rva("data_start") );                             /* VirtualAddress */
-+        put_dword( label_pos("data_end") - label_pos("data_start") );     /* SizeOfRawData */
-+        put_dword( label_pos("data_start") );                             /* PointerToRawData */
-+        put_dword( 0 );                                                   /* PointerToRelocations */
-+        put_dword( 0 );                                                   /* PointerToLinenumbers */
-+        put_word( 0 );                                                    /* NumberOfRelocations */
-+        put_word( 0 );                                                    /* NumberOfLinenumbers */
-+        put_dword( 0xc0000040 /* CNT_INITIALIZED_DATA|MEM_READ|MEM_WRITE */ ); /* Characteristics  */
-+    }
- 
-     /* .reloc section */
--    put_data( ".reloc\0", 8 );     /* Name */
--    put_dword( section_align );    /* VirtualSize */
--    put_dword( 2 * section_align );/* VirtualAddress */
--    put_dword( reloc_size );       /* SizeOfRawData */
--    put_dword( 2 * file_align );   /* PointerToRawData */
--    put_dword( 0 );                /* PointerToRelocations */
--    put_dword( 0 );                /* PointerToLinenumbers */
--    put_word( 0 );                 /* NumberOfRelocations */
--    put_word( 0 );                 /* NumberOfLinenumbers */
-+    put_data( ".reloc\0", 8 );                                            /* Name */
-+    put_dword( label_rva_align("reloc_end") - label_rva("reloc_start") ); /* VirtualSize */
-+    put_dword( label_rva("reloc_start") );                                /* VirtualAddress */
-+    put_dword( label_pos("reloc_end") - label_pos("reloc_start") );       /* SizeOfRawData */
-+    put_dword( label_pos("reloc_start") );                                /* PointerToRawData */
-+    put_dword( 0 );                                                       /* PointerToRelocations */
-+    put_dword( 0 );                                                       /* PointerToLinenumbers */
-+    put_word( 0 );                                                        /* NumberOfRelocations */
-+    put_word( 0 );                                                        /* NumberOfLinenumbers */
-     put_dword( 0x42000040 /* CNT_INITIALIZED_DATA|MEM_DISCARDABLE|MEM_READ */ ); /* Characteristics */
- 
-     /* .rsrc section */
--    if (resources_size)
-+    if (spec->nb_resources)
-     {
--        put_data( ".rsrc\0\0", 8 );    /* Name */
--        put_dword( (resources_size + section_align - 1) & ~(section_align - 1) ); /* VirtualSize */
--        put_dword( 3 * section_align );/* VirtualAddress */
--        put_dword( resources_size );   /* SizeOfRawData */
--        put_dword( 3 * file_align );   /* PointerToRawData */
--        put_dword( 0 );                /* PointerToRelocations */
--        put_dword( 0 );                /* PointerToLinenumbers */
--        put_word( 0 );                 /* NumberOfRelocations */
--        put_word( 0 );                 /* NumberOfLinenumbers */
--        put_dword( 0x40000040 /* CNT_INITIALIZED_DATA|MEM_READ */ ); /* Characteristics */
-+        put_data( ".rsrc\0\0", 8 );                                       /* Name */
-+        put_dword( label_rva_align("res_end") - label_rva("res_start") ); /* VirtualSize */
-+        put_dword( label_rva("res_start") );                              /* VirtualAddress */
-+        put_dword( label_pos("res_end") - label_pos("res_start") );       /* SizeOfRawData */
-+        put_dword( label_pos("res_start") );                              /* PointerToRawData */
-+        put_dword( 0 );                                                   /* PointerToRelocations */
-+        put_dword( 0 );                                                   /* PointerToLinenumbers */
-+        put_word( 0 );                                                    /* NumberOfRelocations */
-+        put_word( 0 );                                                    /* NumberOfLinenumbers */
-+        put_dword( 0x40000040 /* CNT_INITIALIZED_DATA|MEM_READ */ );      /* Characteristics */
-     }
- 
-+    align_output_rva( file_align, file_align );
-+    put_label( "header_end" );
-+
-     /* .text contents */
--    align_output( file_align );
--    if (spec->characteristics & IMAGE_FILE_DLL)
--        put_data( dll_code_section, sizeof(dll_code_section) );
-+    align_output_rva( file_align, section_align );
-+    if (needs_stub_exports( spec ))
-+    {
-+        put_label( "text_start" );
-+        if (target_cpu == CPU_x86)
-+            create_stub_exports_text_x86( spec );
-+        else if (target_cpu == CPU_x86_64)
-+            create_stub_exports_text_x64( spec );
-+        put_label( "text_end" );
-+    }
-     else
--        put_data( exe_code_section, sizeof(exe_code_section) );
-+    {
-+        put_label( "text_start" );
-+        put_label( "entrypoint" );
-+        if (spec->characteristics & IMAGE_FILE_DLL)
-+            put_data( dll_code_section, sizeof(dll_code_section) );
-+        else
-+            put_data( exe_code_section, sizeof(exe_code_section) );
-+        put_label( "text_end" );
-+    }
-+
-+    /* .data contents */
-+    align_output_rva( file_align, section_align );
-+    if (needs_stub_exports( spec ))
-+    {
-+        put_label( "data_start" );
-+        create_stub_exports_data( spec );
-+        put_label( "data_end" );
-+    }
- 
-     /* .reloc contents */
--    align_output( file_align );
--    put_dword( 0 );   /* VirtualAddress */
--    put_dword( 0 );   /* SizeOfBlock */
-+    align_output_rva( file_align, section_align );
-+    put_label( "reloc_start" );
-+    put_dword( label_rva("text_start") );   /* VirtualAddress */
-+    put_dword( 8 );                         /* SizeOfBlock */
-+    put_label( "reloc_end" );
- 
-     /* .rsrc contents */
--    if (resources_size)
-+    if (spec->nb_resources)
-     {
--        align_output( file_align );
--        put_data( resources, resources_size );
-+        align_output_rva( file_align, section_align );
-+        put_label( "res_start" );
-+        output_bin_resources( spec, label_rva("res_start") );
-+        put_label( "res_end" );
-     }
-+
-+    put_label( "file_end" );
-+}
-+
-+
-+/*******************************************************************
-+ *         output_fake_module
-+ *
-+ * Build a fake binary module from a spec file.
-+ */
-+void output_fake_module( DLLSPEC *spec )
-+{
-+    resolve_imports( spec );
-+
-+    /* First pass */
-+    init_output_buffer();
-+    output_fake_module_pass( spec );
-+
-+    /* Second pass */
-+    output_buffer_pos = 0;
-+    output_buffer_rva = 0;
-+    output_fake_module_pass( spec );
-+
-     flush_output_buffer();
- }
- 
-diff -purN '--exclude=*.orig' '--exclude=*.rej' a/tools/winebuild/utils.c b/tools/winebuild/utils.c
---- a/tools/winebuild/utils.c	2018-10-17 15:46:43.000000000 +0300
-+++ b/tools/winebuild/utils.c	2018-10-28 11:42:32.654695845 +0200
-@@ -37,6 +37,7 @@
- #include <sys/mman.h>
- #endif
- 
-+#include "wine/list.h"
- #include "build.h"
- 
- #if defined(_WIN32) && !defined(__CYGWIN__)
-@@ -518,8 +519,87 @@ size_t input_buffer_pos;
- size_t input_buffer_size;
- unsigned char *output_buffer;
- size_t output_buffer_pos;
-+size_t output_buffer_rva;
- size_t output_buffer_size;
- 
-+struct label
-+{
-+    struct list entry;
-+    char *name;
-+    size_t pos;
-+    size_t rva;
-+};
-+
-+static struct list labels = LIST_INIT( labels );
-+
-+struct label *get_label( const char *name )
-+{
-+    struct label *label;
-+
-+    LIST_FOR_EACH_ENTRY( label, &labels, struct label, entry )
-+    {
-+        if (!strcmp(name, label->name))
-+            return label;
-+    }
-+
-+    label = xmalloc( sizeof(*label) );
-+    label->name = xstrdup( name );
-+    label->pos = 0;
-+    label->rva = 0;
-+
-+    list_add_tail( &labels, &label->entry );
-+
-+    return label;
-+}
-+
-+size_t label_pos( const char *name )
-+{
-+    struct label *label = get_label( name );
-+    return label->pos;
-+}
-+
-+size_t label_rva( const char *name )
-+{
-+    struct label *label = get_label( name );
-+    return label->rva;
-+}
-+
-+size_t label_rva_align( const char *name )
-+{
-+    const unsigned int page_size = get_page_size();
-+    size_t rva = label_rva( name );
-+    size_t size = page_size - (rva % page_size);
-+
-+    if (size != page_size) rva += size;
-+    return rva;
-+}
-+
-+void put_label( const char *name )
-+{
-+    struct label *label = get_label( name );
-+
-+    if (label->pos || label->rva)
-+    {
-+        assert( label->pos == output_buffer_pos );
-+        assert( label->rva == output_buffer_rva );
-+    }
-+
-+    label->pos = output_buffer_pos;
-+    label->rva = output_buffer_rva;
-+}
-+
-+void free_labels( void )
-+{
-+    struct label *label, *label2;
-+
-+    LIST_FOR_EACH_ENTRY_SAFE( label, label2, &labels, struct label, entry )
-+    {
-+        list_remove( &label->entry );
-+        free( label->name );
-+        free( label );
-+    }
-+}
-+
- static void check_output_buffer_space( size_t size )
- {
-     if (output_buffer_pos + size >= output_buffer_size)
-@@ -556,7 +636,9 @@ void init_output_buffer(void)
- {
-     output_buffer_size = 1024;
-     output_buffer_pos = 0;
-+    output_buffer_rva = 0;
-     output_buffer = xmalloc( output_buffer_size );
-+    free_labels();
- }
- 
- void flush_output_buffer(void)
-@@ -564,6 +646,7 @@ void flush_output_buffer(void)
-     if (fwrite( output_buffer, 1, output_buffer_pos, output_file ) != output_buffer_pos)
-         fatal_error( "Error writing to %s\n", output_file_name );
-     free( output_buffer );
-+    free_labels();
- }
- 
- unsigned char get_byte(void)
-@@ -603,12 +686,14 @@ void put_data( const void *data, size_t
-     check_output_buffer_space( size );
-     memcpy( output_buffer + output_buffer_pos, data, size );
-     output_buffer_pos += size;
-+    output_buffer_rva += size;
- }
- 
- void put_byte( unsigned char val )
- {
-     check_output_buffer_space( 1 );
-     output_buffer[output_buffer_pos++] = val;
-+    output_buffer_rva++;
- }
- 
- void put_word( unsigned short val )
-@@ -645,6 +730,11 @@ void put_pword( unsigned int val )
-     else put_dword( val );
- }
- 
-+void put_str( const char *str )
-+{
-+    put_data( str, strlen(str) + 1 );
-+}
-+
- void align_output( unsigned int align )
- {
-     size_t size = align - (output_buffer_pos % align);
-@@ -655,6 +745,14 @@ void align_output( unsigned int align )
-     output_buffer_pos += size;
- }
- 
-+void align_output_rva( unsigned int file_align, unsigned int rva_align )
-+{
-+    size_t size = rva_align - (output_buffer_rva % rva_align);
-+
-+    if (size != rva_align) output_buffer_rva += size;
-+    align_output( file_align );
-+}
-+
- /* output a standard header for generated files */
- void output_standard_file_header(void)
- {
-@@ -792,6 +890,7 @@ void free_dll_spec( DLLSPEC *spec )
-         free( odp->name );
-         free( odp->export_name );
-         free( odp->link_name );
-+        free( odp->impl_name );
-     }
-     free( spec->file_name );
-     free( spec->dll_name );
-@@ -801,6 +900,7 @@ void free_dll_spec( DLLSPEC *spec )
-     free( spec->names );
-     free( spec->ordinals );
-     free( spec->resources );
-+    free( spec->syscalls );
-     free( spec );
- }
- 
-@@ -1128,3 +1228,22 @@ const char *get_asm_string_section(void)
-     default:             return ".section .rodata";
-     }
- }
-+
-+/*******************************************************************
-+ *         sort_func_list
-+ *
-+ * Sort a list of functions, removing duplicates.
-+ */
-+int sort_func_list( ORDDEF **list, int count, int (*compare)(const void *, const void *) )
-+{
-+    int i, j;
-+
-+    if (!count) return 0;
-+    qsort( list, count, sizeof(*list), compare );
-+
-+    for (i = j = 0; i < count; i++)
-+    {
-+        if (compare( &list[j], &list[i] )) list[++j] = list[i];
-+    }
-+    return j + 1;
-+}
