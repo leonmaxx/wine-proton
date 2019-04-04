@@ -16,7 +16,7 @@ To build 32-bit packages for RHEL/CentOS 7 you need to use [CentOS 7 Altarch i38
 Repository with built packages available at [Fedora COPR](https://copr.fedorainfracloud.org/coprs/leonmaxx/wine-proton/).  
 Install:
 ```shell
-dnf install wine-proton wine-proton-dxvk-native wine-proton-dxvk-native.i686
+dnf install wine-proton wine-dxvk-win32 wine-dxvk-win32.i686
 ```
 
 # Updates
